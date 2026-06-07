@@ -185,15 +185,32 @@ mendell clip remove <project> <track> <clip>
 
 ### Audio Clips
 
-```bash
-# Add an audio clip — warp mode auto-detected from filename + signal analysis
-mendell clip add <project> <track> <clip-name> --sample /path/to/loop.wav
+Importing an audio file creates an audio clip. On import, Mendell automatically:
+1. Copies the file into `samples/` (unless `--link` is passed)
+2. Detects the native BPM — first from filename keywords, then via tempo analysis if no keyword matches
+3. Detects the warp mode — same two-stage pipeline (filename → signal analysis)
+4. Stores native BPM, warp mode, and file path in the clip's TOML
 
-# Override warp mode: beats | melodic | harmonic | vocal | complex | off
+The clip is then ready to be placed in the arrangement and will be time-stretched to the project BPM at export.
+
+```bash
+# Import an audio file — native BPM and warp mode auto-detected
+mendell clip import <project> <track> <clip-name> --sample /path/to/loop.wav
+
+# Import shows what was detected:
+# → {"ok": true, "data": {"clip": "loop", "native_bpm": 135.0, "warp": "beats", "source": "tempo_analysis"}}
+
+# Link in place instead of copying
+mendell clip import <project> <track> <clip-name> --sample /path/to/loop.wav --link
+
+# Override detected values at import time
+mendell clip import <project> <track> <clip-name> --sample /path/to/loop.wav --native-bpm 128 --warp melodic
+
+# Override after import
 mendell clip set <project> <track> <clip-name> --warp beats
 mendell clip set <project> <track> <clip-name> --native-bpm 135.0
 mendell clip set <project> <track> <clip-name> --pitch +2   # semitones, independent of stretch
-mendell clip set <project> <track> <clip-name> --warp off   # play at original speed
+mendell clip set <project> <track> <clip-name> --warp off   # play at original speed, no stretching
 
 # Warp marker (Beats mode only) — locks a transient to a beat position
 mendell clip warp-marker add <project> <track> <clip> --beat 2.0 --offset -10ms
@@ -314,6 +331,104 @@ mendell auto clear <project> <track> [--param vol]   # clear all points for a pa
 **Curves:** `linear` (default) · `ease-in` · `ease-out` · `ease-in-out` · `step` (jump at the point, no interpolation)
 
 Automation data is stored in the track's TOML file alongside mixer settings.
+
+### Parameter Reference
+
+Every parameter across all entities is settable via the appropriate `set` command. This is the complete reference.
+
+#### Project (`mendell set <project> --<param> <value>`)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `bpm` | float | 120.0 | Tempo in beats per minute |
+| `key` | string | `C` | Root key (C, C#, D, D#, E, F, F#, G, G#, A, A#, B) |
+| `scale` | string | `minor` | Scale type (`major`, `minor`) |
+| `sample_rate` | int | 44100 | Project sample rate (44100 / 48000) |
+| `time_sig` | string | `4/4` | Time signature |
+| `master_vol` | int | 100 | Master output volume (0–100) |
+| `limiter_ceiling` | float | -0.3 | Master limiter ceiling in dBFS |
+
+#### Track (`mendell track set <project> <track> --<param> <value>`)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | Rename the track |
+| `type` | string | — | `midi` / `audio` / `sampler` |
+
+#### Mixer (`mendell mix set <project> <track> --<param> <value>`)
+
+| Parameter | Type | Range | Description |
+|---|---|---|---|
+| `vol` | int | 0–100 | Track volume |
+| `pan` | int | -100–100 | Stereo pan (negative = left, 0 = center) |
+| `mute` | bool | on/off | Mute track |
+| `solo` | bool | on/off | Solo track |
+
+#### Audio Clip (`mendell clip set <project> <track> <clip> --<param> <value>`)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `gain` | float | 0.0 | Clip gain in dB |
+| `native_bpm` | float | auto-detected | The file's original tempo |
+| `warp` | string | auto-detected | `beats` / `melodic` / `harmonic` / `vocal` / `complex` / `off` |
+| `pitch` | float | 0.0 | Pitch shift in semitones (independent of tempo) |
+| `loop` | bool | off | Loop the clip |
+| `loop_start` | float | 0.0 | Loop start in seconds |
+| `loop_end` | float | clip length | Loop end in seconds |
+
+#### MIDI Clip (`mendell clip set <project> <track> <clip> --<param> <value>`)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `transpose` | int | 0 | Shift all notes by N semitones |
+| `velocity_scale` | float | 1.0 | Multiply all velocities by this factor |
+| `loop` | bool | off | Loop the clip |
+
+#### Sampler (`mendell sampler set <project> <track> --<param> <value>`)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `polyphony` | int | 8 | Max simultaneous voices |
+| `tune` | int | 0 | Global fine-tune in cents (±100) |
+
+#### Sampler Slot (`mendell sampler map set <project> <track> --note <note> --<param> <value>`)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `root` | note | same as mapped note | Pitch at which sample plays unmodified |
+| `vol` | int | 100 | Slot volume (0–100) |
+| `pan` | int | 0 | Slot pan (-100–100) |
+| `tune` | int | 0 | Fine-tune in cents (±100) |
+| `pitch_follow` | bool | on | Pitch-shift sample for notes outside root |
+| `loop` | string | `off` | `off` / `forward` / `pingpong` |
+| `loop_start` | float | 0.0 | Loop start in seconds |
+| `loop_end` | float | sample length | Loop end in seconds |
+| `attack` | string | `1ms` | Envelope attack time |
+| `decay` | string | `10ms` | Envelope decay time |
+| `sustain` | int | 100 | Envelope sustain level (0–100) |
+| `release` | string | `50ms` | Envelope release time |
+
+#### FX Slot (`mendell mix fx set <project> <track> <index> --<param> <value>`)
+
+| Effect | Parameters |
+|---|---|
+| `reverb` | `room` (0.0–1.0), `damping` (0.0–1.0), `wet` (0.0–1.0) |
+| `delay` | `time` (beats, e.g. `0.5`), `feedback` (0.0–1.0), `wet` (0.0–1.0) |
+| `compressor` | `threshold` (dBFS), `ratio` (1–20), `attack` (ms), `release` (ms) |
+| `eq` | `low_shelf` (dB), `mid_freq` (Hz), `mid_gain` (dB), `high_shelf` (dB) |
+| `chorus` | `rate` (Hz), `depth` (0.0–1.0), `wet` (0.0–1.0) |
+| `bitcrusher` | `bits` (1–16), `rate_reduction` (1–16) |
+| `filter` | `type` (`lp`/`hp`/`bp`), `cutoff` (Hz), `resonance` (0.0–1.0) |
+| `limiter` | `ceiling` (dBFS), `lookahead` (ms) |
+
+#### Arrangement (`mendell arrange set <project> --<param> <value>`)
+
+| Parameter | Type | Description |
+|---|---|---|
+| `loop` | bool | Enable arrangement loop |
+| `loop_in` | float | Loop start in bar.beat |
+| `loop_out` | float | Loop end in bar.beat |
+| `length` | float | Total arrangement length in bars |
 
 ### Export
 
