@@ -1,0 +1,116 @@
+# Mendell
+
+Mendell is an agent-first music production CLI. Think Ableton Live's feature
+set, but operated entirely through shell commands with structured JSON
+output — no TUI, no GUI, no interactive prompts. It's designed to be driven
+by AI agents (and humans who like scripting their DAW).
+
+Projects, tracks, clips, samplers, arrangements, mixing, automation, and FX
+are all managed via single-shot `mendell <noun> <verb>` commands, and the
+final song is rendered offline to WAV/MP3 with `mendell export`.
+
+See [`SPEC.md`](SPEC.md) for the full command reference and [`CLAUDE.md`](CLAUDE.md)
+for an architecture overview.
+
+## Requirements
+
+- **Python 3.11+**
+- **`rubberband`** — command-line tool used for time-stretching and
+  pitch-shifting warped audio clips. Required only if you place audio clips
+  with `warp` enabled or use clip-level pitch automation; everything else
+  works without it.
+  - Debian/Ubuntu: `sudo apt install rubberband-cli`
+  - macOS (Homebrew): `brew install rubberband`
+  - Arch: `sudo pacman -S rubberband`
+
+  Without it, `mendell export` raises a clear `EngineError` naming the
+  missing binary as soon as it encounters a warped clip — everything else
+  (MIDI/sampler synthesis, unwarped audio, mixing, FX, automation, export)
+  works fine.
+
+## Install
+
+Clone the repo and install in a virtual environment:
+
+```bash
+git clone <repo-url> mendell
+cd mendell
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+This installs the `mendell` console script along with its Python
+dependencies (`click`, `numpy`, `soundfile`, `mido`, `tomli-w`, `scipy`,
+`librosa`, `pyrubberband`).
+
+Verify the install:
+
+```bash
+mendell --help
+```
+
+## Docker
+
+Docker is the recommended way to run Mendell for agent use, since it bundles
+the `rubberband` system dependency and gives you a consistent environment:
+
+```dockerfile
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends rubberband-cli \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY . .
+RUN pip install --no-cache-dir .
+ENTRYPOINT ["mendell"]
+```
+
+```bash
+docker build -t mendell .
+docker run --rm -v "$PWD/songs:/songs" mendell new /songs/my-song --json
+```
+
+## Quick start
+
+```bash
+# Create a project
+mendell new my-song --bpm 120 --json
+
+# Add tracks
+mendell track add my-song drums --type midi --json
+mendell track add my-song kit --type sampler --json
+
+# Route MIDI -> Sampler
+mendell route set my-song drums kit --json
+
+# Import clips
+mendell clip import my-song drums.mid --track drums --json
+mendell clip import my-song kick.wav --json
+
+# Map a sample onto the sampler
+mendell sampler map my-song kit --note C2 --sample kick.wav --json
+
+# Place clips in the arrangement
+mendell arrange place my-song drums-clip drums --at 1.1 --json
+
+# Mix
+mendell mix set my-song drums --vol 90 --pan -10 --json
+
+# Render to audio
+mendell export my-song --out my-song.wav --json
+```
+
+Every command supports `--json` for structured `{ "ok": true, "data": {...} }`
+output, making the whole tool easy to drive programmatically.
+
+## Development
+
+```bash
+source .venv/bin/activate
+pip install -e .
+mendell --help
+```
+
+There is no separate test suite invocation beyond exercising the CLI itself —
+build a project end-to-end (`new` → tracks → clips → arrangement → mixer →
+`export`) and inspect the rendered output and `--json` responses.

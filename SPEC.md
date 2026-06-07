@@ -45,14 +45,15 @@ The canonical internal unit is **sample frames**. Everything is converted to fra
 
 ### Project Sample Rate
 
-Set at project creation, defaults to 44100 Hz:
+Fixed at project creation and immutable thereafter — defaults to 44100 Hz:
 
 ```bash
 mendell new my-song --sample-rate 48000
-mendell set my-song --sample-rate 44100
 ```
 
-All imported audio is resampled to the project sample rate on import if it differs.
+There is no `mendell set --sample-rate`. Every imported sample is resampled to the project's
+sample rate on import (if it differs), and every render uses that same rate, so the whole
+project — and every file inside it — stays on a single, consistent sample rate for its lifetime.
 
 ### Core Conversions
 
@@ -124,7 +125,7 @@ mendell timing <project> --frames 352800
 ### Project
 
 ```bash
-mendell new <name> [--bpm 120] [--key C] [--scale minor]
+mendell new <name> [--bpm 120] [--key C] [--scale minor] [--sample-rate 44100] [--time-sig 4/4]
 mendell info <project> [--json]
 mendell set <project> --bpm 140
 mendell set <project> --key A --scale major
@@ -229,6 +230,9 @@ mendell arrange set-loop <project> --in 1 --out 16
 
 ### Sampler
 
+Note names use scientific pitch notation, where **middle C is C4** (MIDI note 60). Octaves run
+`C<n>`–`B<n>`; e.g. `C1` = MIDI 24, `C4` = MIDI 60, `B5` = MIDI 83.
+
 ```bash
 # Create a sampler track and load samples
 mendell sampler create <project> <track-name>
@@ -285,9 +289,13 @@ mendell mix mute <project> <track> [--off]
 mendell mix solo <project> <track> [--off]
 mendell mix show <project> [--json]
 
-# FX chain (index-based)
+# FX chain — each slot gets a stable id when added (a per-track counter that
+# never repeats and is never reused); processing order follows insertion order.
+# Removing a slot does not renumber the others, so automation referencing
+# fx.<id>.<param> stays valid for the lifetime of that slot.
 mendell mix fx add <project> <track> reverb --room 0.6 --wet 0.3
-mendell mix fx set <project> <track> 0 --room 0.8     # update by index
+# → {"ok": true, "data": {"id": 0, "type": "reverb"}}
+mendell mix fx set <project> <track> 0 --room 0.8     # update by id
 mendell mix fx remove <project> <track> 0
 mendell mix fx list <project> <track> [--json]
 ```
@@ -308,33 +316,35 @@ Any numeric parameter on a track, clip, or FX slot can be automated.
 
 ```bash
 # Add an automation point: parameter reaches `value` at bar.beat
-mendell auto add <project> <track> vol --at 1.0 --value 0
-mendell auto add <project> <track> vol --at 5.0 --value 80
-mendell auto add <project> <track> vol --at 9.0 --value 0
+mendell auto add <project> <track> vol --at 1.1 --value 0
+mendell auto add <project> <track> vol --at 5.1 --value 80
+mendell auto add <project> <track> vol --at 9.1 --value 0
 
 # Automate a clip parameter (clip must be on the track)
-mendell auto add <project> <track> clip.<clip-name>.gain --at 3.0 --value -6
+mendell auto add <project> <track> clip.<clip-name>.gain --at 3.1 --value -6
 
-# Automate an FX parameter (fx slot by index)
-mendell auto add <project> <track> fx.0.wet --at 1.0 --value 0
-mendell auto add <project> <track> fx.0.wet --at 8.0 --value 0.8
+# Automate an FX parameter (fx slot by id)
+mendell auto add <project> <track> fx.0.wet --at 1.1 --value 0
+mendell auto add <project> <track> fx.0.wet --at 8.1 --value 0.8
 
 # Set interpolation curve between two points (default: linear)
-mendell auto add <project> <track> vol --at 5.0 --value 80 --curve ease-in
+mendell auto add <project> <track> vol --at 5.1 --value 80 --curve ease-in
 
 # Inspect / remove
 mendell auto list <project> <track> [--param vol] [--json]
-mendell auto remove <project> <track> vol --at 5.0
+mendell auto remove <project> <track> vol --at 5.1
 mendell auto clear <project> <track> [--param vol]   # clear all points for a param
 ```
 
 **Curves:** `linear` (default) · `ease-in` · `ease-out` · `ease-in-out` · `step` (jump at the point, no interpolation)
 
-Automation data is stored in the track's TOML file alongside mixer settings.
+Each entity owns the automation for its own parameters and stores it in its own TOML file: track/mixer/FX automation lives in the track's TOML alongside mixer settings, and clip automation (`clip.<clip-name>.gain`, `pitch`, `warp`) lives in that clip's TOML alongside its warp settings. `mendell auto` commands route writes to the correct file transparently — the agent always addresses automation through the track (e.g. `mendell auto add <project> <track> clip.<clip-name>.gain ...`), regardless of where it's persisted.
 
 ### Parameter Reference
 
-Every parameter across all entities is settable via the appropriate `set` command. This is the complete reference.
+Every mutable parameter across all entities is settable via the appropriate `set` command (the
+exception is `sample_rate`, which is fixed at `mendell new` and immutable — see
+[Project Sample Rate](#project-sample-rate)). This is the complete reference.
 
 #### Project (`mendell set <project> --<param> <value>`)
 
@@ -343,7 +353,6 @@ Every parameter across all entities is settable via the appropriate `set` comman
 | `bpm` | float | 120.0 | Tempo in beats per minute |
 | `key` | string | `C` | Root key (C, C#, D, D#, E, F, F#, G, G#, A, A#, B) |
 | `scale` | string | `minor` | Scale type (`major`, `minor`) |
-| `sample_rate` | int | 44100 | Project sample rate (44100 / 48000) |
 | `time_sig` | string | `4/4` | Time signature |
 | `master_vol` | int | 100 | Master output volume (0–100) |
 | `limiter_ceiling` | float | -0.3 | Master limiter ceiling in dBFS |
@@ -408,7 +417,7 @@ Every parameter across all entities is settable via the appropriate `set` comman
 | `sustain` | int | 100 | Envelope sustain level (0–100) |
 | `release` | string | `50ms` | Envelope release time |
 
-#### FX Slot (`mendell mix fx set <project> <track> <index> --<param> <value>`)
+#### FX Slot (`mendell mix fx set <project> <track> <id> --<param> <value>`)
 
 | Effect | Parameters |
 |---|---|

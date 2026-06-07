@@ -6,7 +6,9 @@ Mendell is an agent-first music production CLI tool. Think Ableton Live's featur
 
 ## Current State
 
-**Spec phase only.** `SPEC.md` is complete and committed. No code has been written yet. The next session should begin implementation.
+**Implementation complete.** Every module in the architecture below is implemented and wired into the CLI (`src/mendell/`), including the export engine (`mendell export`). End-to-end smoke-tested: project creation → tracks → MIDI/audio clip import → sampler mapping → MIDI→sampler routing → arrangement placement → mixer/FX/automation → WAV/MP3 export with NDJSON progress and `--stems`.
+
+Known environment limitation (not a code defect): `pyrubberband` requires the external `rubberband` CLI binary, which isn't installed here (no sudo). Time-stretch/pitch-shift on warped audio clips will raise a clear `EngineError` until that system dependency is present — this matches the spec's stated requirement.
 
 ## Key Design Decisions (Do Not Revisit)
 
@@ -82,6 +84,10 @@ Suggested implementation order:
 9. **`fx/`** — built-in DSP effects
 10. **`engine/`** — export renderer; reads everything, renders to buffer, writes file
 11. **`cli/`** — wire all commands together, `--json` output, exit codes
+
+### Implementation Watch-Items
+
+- **Negative-number flags in `click`**: many commands take signed values (`--pan -10`, `--pitch -2`/`+2`, `--tune -10`, `--transpose -12`). `click` usually parses these fine with `type=int`/`type=float`, but test each signed-value command during implementation — fix only the ones that actually misparse (e.g. switch to `--flag=value` syntax in docs, or a custom `ParamType`) rather than pre-solving this everywhere.
 
 ## Full Spec
 
