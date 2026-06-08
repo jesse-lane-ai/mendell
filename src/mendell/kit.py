@@ -66,7 +66,10 @@ def load_kit(
     if not folder_path.is_dir():
         raise BadInputError(f"folder not found: {folder}")
 
-    files = sorted(p for p in folder_path.iterdir() if p.suffix.lower() in AUDIO_EXTS)
+    files = sorted(
+        (p for p in folder_path.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS),
+        key=lambda p: (str(p.parent).lower(), p.name.lower()),
+    )
     if not files:
         raise BadInputError(f"no audio files found in {folder}")
 
