@@ -196,6 +196,78 @@ mendell kit load my-song kit ./drum-one-shots/
 mendell export my-song
 ```
 
+### Sample Library
+
+`kit load` and `clip import --sample` are great once you know the path to a folder of
+samples — but agents (and humans) tend to keep their sample collections scattered across
+several external folders (a one-shots pack here, a loop pack there, a client's stems
+somewhere else), and re-typing/re-discovering those paths on every project is friction
+that compounds. The **library** is a small global registry — independent of any project —
+that lets you register named external folders once and reference them by name from then on,
+from any project, forever.
+
+Registrations are stored outside any project, in a user-level config
+(`~/.config/mendell/library.toml`), so the library persists across projects and survives
+project deletion. Multiple folders can be registered side by side under distinct names —
+nothing about the design assumes a single sample root.
+
+```bash
+# Register an external folder under a short name. Recurses by default; doesn't copy
+# anything — the library only ever stores paths + metadata, never sample audio itself.
+mendell library add <name> <path> [--tags drums,lofi,kicks] [--json]
+
+# List every registered folder (name, path, tags, file count, last-scanned time)
+mendell library list [--json]
+
+# Re-scan a folder (or all of them) — picks up files added/removed since registration
+mendell library scan [<name>] [--json]
+
+# Inspect one registered folder — full file listing with detected category per file
+# (kick/snare/hat/loop/one-shot/... via the same filename heuristics `kit load` uses)
+mendell library show <name> [--json]
+
+# Search across all registered folders (or scope to one with --library) by filename
+# keyword and/or tag — the building block agents use to find material without
+# knowing any paths up front
+mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--json]
+
+# Unregister (does not touch the folder or its files on disk)
+mendell library remove <name>
+```
+
+Once registered, library entries plug directly into the commands that already accept a
+folder or sample path — so the rest of the workflow doesn't change, it just stops requiring
+absolute paths:
+
+```bash
+# kit load accepts a registered name in place of a folder path
+mendell kit load my-song kit --library my-drum-pack [--json]
+
+# sampler import / map add / clip import resolve a "<library-name>/<relative-path>"
+# reference the same way they resolve a real path today
+mendell sampler import my-song kit --library my-drum-pack/Kicks
+mendell sampler map add my-song kit --note C1 --sample my-drum-pack/Kicks/808.wav
+mendell clip import my-song drums loop-a --sample my-drum-pack/Loops/dark-loop.wav
+```
+
+`library search` is the piece purpose-built for agents: instead of an agent needing to
+`ls` around the filesystem (which it may not have access to, or may waste tokens
+exploring), it can ask Mendell directly — `mendell library search "808" --category kick`
+— and get back a ranked list of `library-name/relative/path` references it can hand
+straight to `kit load` / `sampler map add` / `clip import`.
+
+```json
+{ "ok": true, "data": { "matches": [
+  { "ref": "my-drum-pack/Kicks/808-deep.wav", "category": "kick", "tags": ["drums", "lofi"] },
+  { "ref": "my-drum-pack/Kicks/808-punchy.wav", "category": "kick", "tags": ["drums", "lofi"] }
+] } }
+```
+
+Out of scope for v1: copying/syncing library contents into projects (samples are still
+copied into `<project>/samples/` on use, exactly as they are today — the library only
+stores *references*), audio analysis/tagging beyond filename heuristics, and remote/cloud
+folders (local paths only).
+
 ### Tracks
 
 ```bash
