@@ -43,6 +43,14 @@ def new(name, style):
 @command
 def make(name, style, bpm, key, duration, variations, kit, melody, bass, export):
     """High-level command: create project, minimal kit load, generate variations, add loops, export."""
-    # Placeholder implementation — full orchestration to be expanded
-    data = beat_mod.new(Path.cwd(), name, style=style)
-    return data, f"make: created '{name}' ({style}) with {variations} variations, ready for full orchestration"
+    data = beat_mod.make(
+        Path.cwd(), name,
+        style=style, bpm=bpm, key=key, duration=duration,
+        variations=variations, kit=kit, melody=melody, bass=bass,
+        export_format=export,
+    )
+    out = data["export"].get("out") or data["export"].get("path")
+    return data, (
+        f"made '{name}' ({style}) — {data['sections']} sections / "
+        f"{data['variations']} variations @ {data['bpm']:g} BPM -> {out}"
+    )
