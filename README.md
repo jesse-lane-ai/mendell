@@ -95,6 +95,25 @@ tracks are active, FX chains, and any missing-file/missing-`rubberband` problems
 mendell export my-song --dry-run --json
 ```
 
+### Sample library
+
+Tired of retyping paths to your sample packs? Register a folder once, by name,
+and reference it from any project from then on — Mendell remembers it globally
+(`~/.config/mendell/library.toml`), and you can register as many folders as you
+like:
+
+```bash
+mendell library add my-drums ~/Samples/drum-one-shots --tags drums,lofi --json
+mendell library search 808 --category kick --json     # find samples by name/category, no path-hunting
+mendell kit load my-song kit --library my-drums --json # load a registered folder straight onto a track
+mendell sampler map add my-song kit --note C2 --sample my-drums/Kicks/808.wav --json
+```
+
+`library add`/`library scan` index each folder's files and guess a category per
+file (kick/snare/hat/loop/...) so `library search`/`library show` can answer
+instantly — no path required, agent-friendly by design. See
+[`SPEC.md`](SPEC.md#sample-library) for the full reference.
+
 Or build one up from the primitives directly:
 
 ```bash
