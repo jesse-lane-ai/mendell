@@ -33,7 +33,7 @@ for an architecture overview.
 Clone the repo and install in a virtual environment:
 
 ```bash
-git clone <repo-url> mendell
+git clone https://github.com/jesse-lane-ai/mendell.git mendell
 cd mendell
 python3 -m venv .venv
 source .venv/bin/activate
