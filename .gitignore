@@ -57,3 +57,7 @@ Thumbs.db
 *.aiff
 *.flac
 samples/
+
+# Generated beat output / scratch projects
+output/
+skippy-lofi-*/
