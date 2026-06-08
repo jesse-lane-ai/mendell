@@ -244,8 +244,8 @@ absolute paths:
 mendell kit load my-song kit --library my-drum-pack [--json]
 
 # sampler import / map add / clip import resolve a "<library-name>/<relative-path>"
-# reference the same way they resolve a real path today
-mendell sampler import my-song kit --library my-drum-pack/Kicks
+# reference anywhere they take a folder or sample path — same as a real path today
+mendell sampler import my-song kit my-drum-pack/Kicks --start-note C1
 mendell sampler map add my-song kit --note C1 --sample my-drum-pack/Kicks/808.wav
 mendell clip import my-song drums loop-a --sample my-drum-pack/Loops/dark-loop.wav
 ```

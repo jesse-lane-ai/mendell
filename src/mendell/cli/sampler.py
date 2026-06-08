@@ -58,7 +58,9 @@ def show(project, track):
 @command
 def import_(project, track, folder, start_note):
     project_dir = resolve_project(project)
-    data = sampler_mod.bulk_import(project_dir, track, folder, start_note=start_note)
+    data = sampler_mod.bulk_import(
+        project_dir, track, library_mod.resolve_path_arg(folder), start_note=start_note,
+    )
     return data, data
 
 
