@@ -3,6 +3,7 @@
 import click
 
 from .. import clips as clips_mod
+from .. import library as library_mod
 from ..paths import resolve_project
 from ._base import command, json_option
 
@@ -29,7 +30,7 @@ def import_(project, track, clip_name, midi_path, midi_track_index, sample_path,
     data = clips_mod.import_clip(
         project_dir, track, clip_name,
         midi_path=midi_path, midi_track_index=midi_track_index,
-        sample_path=sample_path, link=link,
+        sample_path=library_mod.resolve_path_arg(sample_path), link=link,
         native_bpm=native_bpm, warp=warp,
     )
     return data, data

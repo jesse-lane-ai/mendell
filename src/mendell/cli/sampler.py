@@ -2,6 +2,7 @@
 
 import click
 
+from .. import library as library_mod
 from .. import routing as routing_mod
 from .. import sampler as sampler_mod
 from ..paths import resolve_project
@@ -80,7 +81,8 @@ def map_group():
 def map_add(project, track, note, note_range, sample, root, link, loop):
     project_dir = resolve_project(project)
     data = sampler_mod.map_add(
-        project_dir, track, note=note, note_range=note_range, sample=sample,
+        project_dir, track, note=note, note_range=note_range,
+        sample=library_mod.resolve_path_arg(sample),
         root=root, link=link, loop=loop,
     )
     return data, data
