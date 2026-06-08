@@ -16,7 +16,7 @@ def emit_ok(data: Any, as_json: bool, human: str | None = None) -> None:
 
 def emit_error(err: MendellError, as_json: bool) -> None:
     if as_json:
-        click_echo({"ok": False, "error": err.message, "code": err.code})
+        sys.stderr.write(json.dumps({"ok": False, "error": err.message, "code": err.code}, indent=2, sort_keys=False) + "\n")
     else:
         sys.stderr.write(f"error: {err.message}\n")
 
