@@ -161,6 +161,35 @@ limiter_ceiling = -0.3
 
 After `mendell new`, every other command operates on the project by name (resolved from the current directory or an absolute path).
 
+### Quick-Start Helpers
+
+The primitives above (`new`, `track add`, `sampler create`, `route set`, `sampler map add`, ...)
+cover every case, but the 80% case — "stand up a beat skeleton" / "load a drum kit" — used to
+take a dozen calls. Two higher-level commands collapse that:
+
+```bash
+# Scaffold a ready-to-go beat: project + tempo/key preset + drums(midi)->kit(sampler)
+# routing + a looping starter MIDI pattern placed across the arrangement.
+mendell beat new <name> --style lofi|dark|energetic [--json]
+
+# Auto-map a folder of one-shots onto a sampler track by filename — creates the
+# sampler track if needed. Recognized drum names (kick/snare/clap/hat/tom/crash/
+# ride/perc/...) are mapped to their General MIDI percussion notes; anything
+# else is mapped sequentially starting at --start-note (default C5).
+mendell kit load <project> <track> <folder> [--start-note C5] [--json]
+```
+
+`beat new` writes its starter pattern using the same General MIDI percussion notes
+(kick=C2, snare=D2, clap=D#2, closed hat=F#2, open hat=A#2, ...) that `kit load`
+assigns one-shots to — so loading a kit onto the scaffolded `kit` track lines up
+with the pattern immediately, no manual note-mapping required:
+
+```bash
+mendell beat new my-song --style energetic
+mendell kit load my-song kit ./drum-one-shots/
+mendell export my-song
+```
+
 ### Tracks
 
 ```bash
@@ -442,10 +471,19 @@ exception is `sample_rate`, which is fixed at `mendell new` and immutable — se
 ### Export
 
 ```bash
-mendell export <project> --out ./render.wav            # render full arrangement
+mendell export <project>                               # render to <project>/export/<name>.wav
+mendell export <project> --format mp3                  # render to <project>/export/<name>.mp3
+mendell export <project> --out ./render.wav            # explicit path overrides the default
 mendell export <project> --out ./render.wav --stems    # one file per track
 mendell export <project> --out ./render.mp3
 ```
+
+`--out` is optional. When omitted, export writes to a consistent, predictable
+location — `<project>/export/<project-name>.<format>` (format defaults to `wav`,
+or pick `--format mp3`) — so repeated exports land in the same place with the
+same name (idempotent overwrite) instead of scattering output paths across runs.
+After writing, export verifies the file actually exists and is non-empty before
+reporting success, so a returned `path` is guaranteed to point at real audio.
 
 Export emits NDJSON progress events to stdout:
 

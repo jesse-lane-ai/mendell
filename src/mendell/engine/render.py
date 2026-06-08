@@ -6,6 +6,7 @@ All buffers are (n_frames, 2) float64 stereo arrays at the project sample rate.
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -107,10 +108,29 @@ def _find_slot(slots: list[dict[str, Any]], note: int) -> dict[str, Any] | None:
 _SAMPLE_CACHE: dict[str, np.ndarray] = {}
 
 
+_RUBBERBAND_INSTALL_HINT = (
+    "install it with 'sudo apt install rubberband-cli' (Debian/Ubuntu), "
+    "'brew install rubberband' (macOS), or 'sudo pacman -S rubberband' (Arch), "
+    "then re-run export"
+)
+
+
+def _missing_file_hint(path: str, *, what: str, fix: str) -> str:
+    return (
+        f"{what} file is missing on disk: '{path}' — it may have been moved, deleted, "
+        f"or referenced via --link from a path that no longer exists. {fix}"
+    )
+
+
 def _load_sample(path: str, sample_rate: int) -> np.ndarray:
     cached = _SAMPLE_CACHE.get(path)
     if cached is not None:
         return cached
+    if not Path(path).is_file():
+        raise EngineError(_missing_file_hint(
+            path, what="sample",
+            fix="check `mendell sampler map list <project> <track>` and re-map it with `mendell sampler map add`.",
+        ))
     y, sr = sf.read(path, always_2d=True, dtype="float64")
     y = dsp.to_stereo(y)
     if sr != sample_rate:
@@ -160,6 +180,8 @@ def render_sampler_track(ctx: RenderContext, track_name: str, midi_events: list[
 
         try:
             sample = _load_sample(slot["sample"], ctx.sample_rate)
+        except EngineError:
+            raise
         except Exception as err:
             raise EngineError(f"could not read sample '{slot['sample']}': {err}")
 
@@ -213,25 +235,26 @@ def render_sampler_track(ctx: RenderContext, track_name: str, midi_events: list[
 # ---------------------------------------------------------------------------
 
 def _stretch_and_pitch(y: np.ndarray, sample_rate: int, *, stretch_ratio: float, pitch_semitones: float) -> np.ndarray:
+    needs_rubberband = stretch_ratio != 1.0 or bool(pitch_semitones)
+    if needs_rubberband and shutil.which("rubberband") is None:
+        raise EngineError(
+            "this clip needs time-stretching or pitch-shifting, which requires the "
+            f"'rubberband' command-line tool — it isn't installed or isn't on PATH; {_RUBBERBAND_INSTALL_HINT}"
+        )
+
     out = y
     if stretch_ratio != 1.0:
         try:
             import pyrubberband as prb
             out = prb.time_stretch(out, sample_rate, stretch_ratio)
         except Exception as err:
-            raise EngineError(
-                f"time-stretching requires the 'rubberband' command-line tool "
-                f"(see CLAUDE.md installation notes): {err}"
-            )
+            raise EngineError(f"time-stretching with 'rubberband' failed: {err}")
     if pitch_semitones:
         try:
             import pyrubberband as prb
             out = prb.pitch_shift(out, sample_rate, pitch_semitones)
         except Exception as err:
-            raise EngineError(
-                f"pitch-shifting requires the 'rubberband' command-line tool "
-                f"(see CLAUDE.md installation notes): {err}"
-            )
+            raise EngineError(f"pitch-shifting with 'rubberband' failed: {err}")
     return out
 
 
@@ -253,10 +276,16 @@ def render_audio_track(ctx: RenderContext, track_name: str) -> np.ndarray:
         loop_start = float(params.get("loop_start", 0.0))
         loop_end = params.get("loop_end")
 
+        source = clip.get("source", "")
+        if not Path(source).is_file():
+            raise EngineError(_missing_file_hint(
+                source, what=f"audio clip '{clip.get('name')}' source",
+                fix="re-import it with `mendell clip import ... --sample <path>`.",
+            ))
         try:
-            y, sr = sf.read(clip["source"], always_2d=True, dtype="float64")
+            y, sr = sf.read(source, always_2d=True, dtype="float64")
         except Exception as err:
-            raise EngineError(f"could not read audio clip '{clip.get('name')}': {err}")
+            raise EngineError(f"could not read audio clip '{clip.get('name')}' ('{source}'): {err}")
         if sr != ctx.sample_rate:
             y = dsp.resample_by_ratio(y, sr / ctx.sample_rate)
 

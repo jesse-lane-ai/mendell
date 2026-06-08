@@ -8,7 +8,7 @@ Mendell is an agent-first music production CLI tool. Think Ableton Live's featur
 
 **Implementation complete.** Every module in the architecture below is implemented and wired into the CLI (`src/mendell/`), including the export engine (`mendell export`). End-to-end smoke-tested: project creation → tracks → MIDI/audio clip import → sampler mapping → MIDI→sampler routing → arrangement placement → mixer/FX/automation → WAV/MP3 export with NDJSON progress and `--stems`.
 
-Known environment limitation (not a code defect): `pyrubberband` requires the external `rubberband` CLI binary, which isn't installed here (no sudo). Time-stretch/pitch-shift on warped audio clips will raise a clear `EngineError` until that system dependency is present — this matches the spec's stated requirement.
+The `rubberband` CLI binary (required by `pyrubberband` for time-stretch/pitch-shift on warped audio clips) is now installed in this environment — verified end-to-end by importing a warped loop, placing it, and exporting (rendered correctly at a tempo different from the clip's native BPM).
 
 ## Key Design Decisions (Do Not Revisit)
 
@@ -88,6 +88,18 @@ Suggested implementation order:
 ### Implementation Watch-Items
 
 - **Negative-number flags in `click`**: many commands take signed values (`--pan -10`, `--pitch -2`/`+2`, `--tune -10`, `--transpose -12`). `click` usually parses these fine with `type=int`/`type=float`, but test each signed-value command during implementation — fix only the ones that actually misparse (e.g. switch to `--flag=value` syntax in docs, or a custom `ParamType`) rather than pre-solving this everywhere.
+
+## Field Notes — Friction Points From Real Usage (Resolved)
+
+Surfaced while building actual beats end-to-end with the agent, and since addressed:
+
+1. **Subagents reported export paths that were never written.** Fixed: `engine.export()` now verifies the output file exists and is non-empty immediately after writing (`engine/__init__.py:_write_audio`), raising `EngineError` if not — a returned `path` is now guaranteed to point at real audio.
+2. **Sampler + one-shot drum-kit workflow was too manual.** Fixed: `mendell kit load <project> <track> <folder>` (`src/mendell/kit.py`) creates the sampler track + instrument if needed and auto-maps one-shots to General MIDI percussion notes by filename keyword (kick/snare/clap/hat/tom/crash/ride/perc/...), with sequential fallback for anything unrecognized.
+3. **Output paths were inconsistent across runs.** Fixed: `mendell export` now defaults `--out` to `<project>/export/<project-name>.<format>` (format defaults to `wav`, override with `--format mp3`) — predictable, idempotent-overwrite, no more scattered paths. Explicit `--out` still works as an override.
+4. **No quick-start templates.** Fixed: `mendell beat new <name> --style lofi|dark|energetic` (`src/mendell/beat.py`) scaffolds a project with style-tuned tempo/key, a `drums`(midi)→`kit`(sampler) routing pair, and a looping starter MIDI drum pattern (generated via `mido`, written to `<project>/midi/`) placed across an 8-bar arrangement. Patterns use the same GM percussion notes that `kit load` maps one-shots onto, so the two compose seamlessly: `beat new` → `kit load` → `export`.
+5. **Error messages for missing `rubberband` / missing sample files were vague.** Fixed: `engine/render.py` now proactively checks `shutil.which("rubberband")` before any stretch/pitch-shift and raises an actionable message with install commands (apt/brew/pacman); missing sample/clip source files are detected before `sf.read` and raise a message naming the exact path and the fix (`sampler map add` / `clip import`).
+
+The pure-CLI + structured-JSON design remains the right foundation for agent-driven use — these were "batteries included" gaps, now closed. See `SPEC.md` → "Quick-Start Helpers" and "Export" for the new command docs.
 
 ## Full Spec
 

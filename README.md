@@ -72,6 +72,17 @@ docker run --rm -v "$PWD/songs:/songs" mendell new /songs/my-song --json
 
 ## Quick start
 
+The fastest path to a finished beat — scaffold a project from a style preset,
+drop in a folder of one-shot drum samples (auto-mapped by filename), and render:
+
+```bash
+mendell beat new my-song --style energetic --json   # project + tracks + routing + starter pattern
+mendell kit load my-song kit ./drum-one-shots/ --json  # auto-map kick/snare/hat/... by name
+mendell export my-song --json                        # renders to my-song/export/my-song.wav
+```
+
+Or build one up from the primitives directly:
+
 ```bash
 # Create a project
 mendell new my-song --bpm 120 --json
@@ -81,23 +92,24 @@ mendell track add my-song drums --type midi --json
 mendell track add my-song kit --type sampler --json
 
 # Route MIDI -> Sampler
-mendell route set my-song drums kit --json
+mendell route set my-song --from drums --to kit --json
 
 # Import clips
-mendell clip import my-song drums.mid --track drums --json
-mendell clip import my-song kick.wav --json
+mendell clip import my-song drums drums-clip --midi drums.mid --json
+mendell clip import my-song drums kick-clip --sample kick.wav --json
 
 # Map a sample onto the sampler
-mendell sampler map my-song kit --note C2 --sample kick.wav --json
+mendell sampler map add my-song kit --note C2 --sample kick.wav --json
 
 # Place clips in the arrangement
-mendell arrange place my-song drums-clip drums --at 1.1 --json
+mendell arrange place my-song drums drums-clip --bar 1 --json
 
 # Mix
 mendell mix set my-song drums --vol 90 --pan -10 --json
 
-# Render to audio
-mendell export my-song --out my-song.wav --json
+# Render to audio — writes to my-song/export/my-song.wav by default;
+# pass --out to choose an explicit path, or --format mp3 to change the default's extension
+mendell export my-song --json
 ```
 
 Every command supports `--json` for structured `{ "ok": true, "data": {...} }`

@@ -27,6 +27,8 @@ from .render import (
 )
 
 EXPORT_FORMATS = {".wav": "WAV", ".mp3": "MP3"}
+DEFAULT_EXPORT_DIR = "export"
+DEFAULT_EXPORT_FORMAT = "wav"
 
 
 def _clip_length_frames(clip_data: dict[str, Any], tp: dict[str, Any]) -> int:
@@ -66,15 +68,39 @@ def _write_audio(path: Path, buf: np.ndarray, sample_rate: int) -> None:
     except Exception as err:
         raise EngineError(f"could not write audio file '{path}': {err}")
 
+    # Guard against silent failures (wrong cwd, race with another process, a
+    # subagent reporting a path that was never actually written) — a reported
+    # export path must point at a real, non-empty file.
+    if not path.is_file() or path.stat().st_size == 0:
+        raise EngineError(
+            f"export reported success but '{path}' is missing or empty on disk — "
+            f"check the working directory and that the path is writable, then re-run export"
+        )
 
-def export(project_dir: Path, *, out: str, stems: bool = False, progress: bool = False) -> dict[str, Any]:
-    out_path = Path(out)
-    if out_path.suffix.lower() not in EXPORT_FORMATS:
-        raise BadInputError(f"unsupported export format '{out_path.suffix}' (expected .wav or .mp3)")
 
+def _resolve_out_path(project_dir: Path, proj_data: dict[str, Any], *, out: str | None, fmt: str | None) -> Path:
+    if out is not None:
+        out_path = Path(out)
+        if out_path.suffix.lower() not in EXPORT_FORMATS:
+            raise BadInputError(f"unsupported export format '{out_path.suffix}' (expected .wav or .mp3)")
+        return out_path
+
+    fmt = (fmt or DEFAULT_EXPORT_FORMAT).lower()
+    suffix = f".{fmt}"
+    if suffix not in EXPORT_FORMATS:
+        raise BadInputError(f"unsupported export format '{fmt}' (expected wav or mp3)")
+
+    project_name = proj_data.get("project", {}).get("name") or project_dir.name
+    return project_dir / DEFAULT_EXPORT_DIR / f"{project_name}{suffix}"
+
+
+def export(project_dir: Path, *, out: str | None = None, format: str | None = None,
+           stems: bool = False, progress: bool = False) -> dict[str, Any]:
     tp = project_mod.timing_params(project_dir)
     proj_data = project_mod.load(project_dir)
     master = {**project_mod.MASTER_DEFAULTS, **proj_data.get("master", {})}
+
+    out_path = _resolve_out_path(project_dir, proj_data, out=out, fmt=format)
 
     arrangement_data = arrangement_mod.load(project_dir)
     placements = arrangement_data.get("clips", [])
