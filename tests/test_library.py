@@ -38,6 +38,19 @@ def test_add_registers_and_counts_files(lib_config, sample_folder):
     assert entry["file_count"] == 3  # .txt is excluded
 
 
+def test_search_and_show_use_cached_index_not_a_live_walk(lib_config, sample_folder):
+    """search/show read the cache populated at add/scan time — files dropped in
+    afterwards shouldn't appear until an explicit rescan."""
+    library.add("drum-pack", str(sample_folder))
+
+    (sample_folder / "Kicks" / "kick-new.wav").write_bytes(b"fake")
+    assert library.search("kick-new")["matches"] == []
+    assert all(f["ref"] != "drum-pack/Kicks/kick-new.wav" for f in library.show("drum-pack")["files"])
+
+    library.scan("drum-pack")
+    assert [m["ref"] for m in library.search("kick-new")["matches"]] == ["drum-pack/Kicks/kick-new.wav"]
+
+
 def test_add_missing_folder_raises(lib_config, tmp_path):
     with pytest.raises(BadInputError):
         library.add("nope", str(tmp_path / "does-not-exist"))

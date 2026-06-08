@@ -90,6 +90,26 @@ def _scan_folder(path: Path) -> list[Path]:
     )
 
 
+def _index_folder(folder: Path) -> list[dict[str, Any]]:
+    """Walk `folder` once and cache each file's relative path + guessed
+    category — the result `add`/`scan` persist so `search`/`show` can read
+    straight from the registry instead of re-walking and re-guessing."""
+    return [
+        {"path": str(file_path.relative_to(folder)), "category": guess_category(file_path)}
+        for file_path in _scan_folder(folder)
+    ]
+
+
+def _cached_files(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Cached file index for `entry`, building it on the fly for entries
+    registered before caching existed (so old registries keep working)."""
+    files = entry.get("files")
+    if files is None:
+        folder = Path(entry["path"])
+        files = _index_folder(folder) if folder.is_dir() else []
+    return files
+
+
 def guess_category(file_path: Path) -> str:
     """Best-effort category guess from filename (then parent-folder) keywords."""
     for haystack in (file_path.stem.lower(), file_path.parent.name.lower()):
@@ -111,7 +131,7 @@ def add(name: str, path: str, *, tags: list[str] | None = None) -> dict[str, Any
 
     data = _load()
     entry = _find(data, name)
-    files = _scan_folder(folder)
+    indexed = _index_folder(folder)
     if entry is None:
         entry = {"name": name, "path": str(folder), "tags": list(tags or [])}
         _entries(data).append(entry)
@@ -119,7 +139,8 @@ def add(name: str, path: str, *, tags: list[str] | None = None) -> dict[str, Any
         entry["path"] = str(folder)
         if tags is not None:
             entry["tags"] = list(tags)
-    entry["file_count"] = len(files)
+    entry["files"] = indexed
+    entry["file_count"] = len(indexed)
     entry["last_scanned"] = time.time()
 
     _entries(data).sort(key=lambda e: e["name"])
@@ -161,7 +182,9 @@ def scan(name: str | None = None) -> dict[str, Any]:
         folder = Path(entry["path"])
         if not folder.is_dir():
             raise BadInputError(f"library '{entry['name']}' folder no longer exists: {entry['path']}")
-        entry["file_count"] = len(_scan_folder(folder))
+        indexed = _index_folder(folder)
+        entry["files"] = indexed
+        entry["file_count"] = len(indexed)
         entry["last_scanned"] = time.time()
         scanned.append(_summary(entry))
 
@@ -172,17 +195,11 @@ def scan(name: str | None = None) -> dict[str, Any]:
 def show(name: str) -> dict[str, Any]:
     data = _load()
     entry = _require(data, name)
-    folder = Path(entry["path"])
-    if not folder.is_dir():
-        raise BadInputError(f"library '{name}' folder no longer exists: {entry['path']}")
 
-    files = []
-    for file_path in _scan_folder(folder):
-        files.append({
-            "ref": f"{name}/{file_path.relative_to(folder)}",
-            "category": guess_category(file_path),
-        })
-
+    files = [
+        {"ref": f"{name}/{f['path']}", "category": f["category"]}
+        for f in _cached_files(entry)
+    ]
     return {**_summary(entry), "files": files}
 
 
@@ -198,18 +215,14 @@ def search(
     for entry in entries:
         if tag is not None and tag not in entry.get("tags", []):
             continue
-        folder = Path(entry["path"])
-        if not folder.is_dir():
-            continue
-        for file_path in _scan_folder(folder):
-            file_category = guess_category(file_path)
-            if category is not None and file_category != category:
+        for f in _cached_files(entry):
+            if category is not None and f["category"] != category:
                 continue
-            if needle is not None and needle not in file_path.name.lower():
+            if needle is not None and needle not in Path(f["path"]).name.lower():
                 continue
             matches.append({
-                "ref": f"{entry['name']}/{file_path.relative_to(folder)}",
-                "category": file_category,
+                "ref": f"{entry['name']}/{f['path']}",
+                "category": f["category"],
                 "tags": list(entry.get("tags", [])),
             })
 
