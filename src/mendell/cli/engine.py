@@ -14,10 +14,15 @@ from ._base import command, json_option
 @click.option("--format", "fmt", type=click.Choice(["wav", "mp3"]), default=None,
               help="Output format when --out is omitted (default: wav).")
 @click.option("--stems", is_flag=True, help="Also write one file per track to <out>_stems/.")
+@click.option("--dry-run", is_flag=True,
+              help="Print the render plan (duration, active tracks, FX chains, potential problems) without rendering audio.")
 @json_option
 @command
-def export(project, out, fmt, stems):
+def export(project, out, fmt, stems, dry_run):
     """Render the full arrangement to a stereo audio file."""
     project_dir = resolve_project(project)
+    if dry_run:
+        data = engine_mod.preview(project_dir, out=out, format=fmt, stems=stems)
+        return data, data
     data = engine_mod.export(project_dir, out=out, format=fmt, stems=stems, progress=True)
     return data, data

@@ -14,6 +14,7 @@ from typing import Any
 from .. import paths
 from .. import tracks as tracks_mod
 from ..errors import BadInputError, NotFoundError
+from ..fx import presets as fx_presets
 from ..fx import schema as fx_schema
 
 
@@ -119,3 +120,16 @@ def fx_remove(project_dir: Path, track_name: str, fx_id: int) -> dict[str, Any]:
 def fx_list(project_dir: Path, track_name: str) -> list[dict[str, Any]]:
     data = tracks_mod.load(project_dir, track_name)
     return [{"id": s["id"], "type": s["type"], "params": s["params"]} for s in data.get("fx", [])]
+
+
+def fx_apply_preset(project_dir: Path, track_name: str, preset_name: str) -> dict[str, Any]:
+    """Append a curated, named FX chain (see fx/presets.py) to TRACK in one
+    shot — each slot is added through the normal `fx_add` path, so it gets a
+    stable id and validated params just like a hand-built chain. Like `fx add`,
+    this appends; re-running it stacks another copy of the chain."""
+    if preset_name not in fx_presets.FX_PRESETS:
+        raise BadInputError(f"unknown FX preset '{preset_name}' (expected one of {fx_presets.PRESET_NAMES})")
+
+    added = [fx_add(project_dir, track_name, fx_type, **params)
+             for fx_type, params in fx_presets.FX_PRESETS[preset_name]]
+    return {"track": track_name, "preset": preset_name, "added": added}

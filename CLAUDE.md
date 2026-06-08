@@ -101,6 +101,20 @@ Surfaced while building actual beats end-to-end with the agent, and since addres
 
 The pure-CLI + structured-JSON design remains the right foundation for agent-driven use — these were "batteries included" gaps, now closed. See `SPEC.md` → "Quick-Start Helpers" and "Export" for the new command docs.
 
+## Field Notes — Round 2: Agent-Requested Features (Resolved)
+
+A follow-up wishlist from agent usage, triaged and implemented (skipped: a REPL and
+file-based undo/versioning, both of which cut against the "no interactive prompts,
+idempotent single-shot commands" design; sample-suggest and folder-watch, both
+larger asks better scoped separately):
+
+1. **No way to sanity-check a render before paying for it.** Added `mendell export <project> --dry-run`: builds the exact same plan `export()` would execute (duration, resolved output path, every track's type/active/mute/solo/placement-count/FX-chain, and warnings for missing sample/clip files, a warped clip needing `rubberband` when it's absent, an empty arrangement, or no active audio-producing track) without rendering a sample or touching disk (`engine/__init__.py:preview`).
+2. **Render failures didn't say which track/clip/FX caused them.** `engine/render.py` now wraps sampler-sample, audio-clip-source, time-stretch, and FX-processing errors with `"<track-kind> track '<name>', <clip 'X' | note Y | FX slot #N (type)>: <cause> — <suggested fix command>"` context, so a failure points straight at the offending element instead of a bare DSP/IO message.
+3. **FX chains had to be built slot-by-slot.** Added `mendell mix fx apply <project> <track> <preset>` (`fx/presets.py`, `mixer.fx_apply_preset`) with curated chains — `lofi-vinyl`, `tape-warmth`, `radio`, `telephone`, `spacious`, `punch` — appended via the normal `fx_add` path (stable ids, validated params).
+4. **No way to generate a MIDI pattern without hand-building one in a DAW.** Added `mendell midi generate <project> <track> <clip-name> --style boom-bap|lofi|trap [--bars N]` (`midi_gen.py`) — writes a `.mid` to `<project>/midi/` and imports it as a looping clip in one shot, using the same GM percussion notes as `beat new`/`kit load` so everything composes. (`beat.py`'s pattern writer was refactored into the shared `midi_gen.write_pattern_midi`.)
+5. **BPM/warp detection existed, but key didn't.** Added Krumhansl-Schmuckler key estimation (chroma-energy correlation against rotated major/minor profiles) to `clips/audio_analysis.py:detect_key_via_analysis` — runs unconditionally on audio import (no filename heuristic for key exists) and is stored/reported as `detected_key`/`detected_scale` on the clip (`clip show`).
+6. **Bonus fix surfaced while testing #4 end-to-end:** `mendell new <path-with-slashes>` (e.g. `mendell new /songs/my-song`) stored the *full path string* as `project.name`, which silently broke `export`'s default-output-path resolution (pathlib drops the `<project>/export/` prefix when joining with what looks like an absolute path — the file landed at `/songs/my-song.wav` instead of `/songs/my-song/export/my-song.wav`). Fixed in `cli/project.py:new` by splitting the argument into parent dir + bare basename before calling `project_mod.create`, so `project.name` is always just the directory name.
+
 ## Full Spec
 
 See `SPEC.md` for the complete command reference, parameter tables, warp mode details, timing engine formulas, and project format.

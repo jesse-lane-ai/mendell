@@ -177,6 +177,12 @@ mendell beat new <name> --style lofi|dark|energetic [--json]
 # ride/perc/...) are mapped to their General MIDI percussion notes; anything
 # else is mapped sequentially starting at --start-note (default C5).
 mendell kit load <project> <track> <folder> [--start-note C5] [--json]
+
+# Generate a starter drum pattern from a style preset, write it to
+# <project>/midi/<clip-name>.mid, and import it onto an existing 'midi' track
+# in one shot — uses the same General MIDI percussion notes as `beat new` /
+# `kit load`, so it composes with both. Loops by default (--no-loop to disable).
+mendell midi generate <project> <track> <clip-name> --style boom-bap|lofi|trap [--bars 1] [--no-loop] [--json]
 ```
 
 `beat new` writes its starter pattern using the same General MIDI percussion notes
@@ -219,16 +225,21 @@ Importing an audio file creates an audio clip. On import, Mendell automatically:
 1. Copies the file into `samples/` (unless `--link` is passed)
 2. Detects the native BPM — first from filename keywords, then via tempo analysis if no keyword matches
 3. Detects the warp mode — same two-stage pipeline (filename → signal analysis)
-4. Stores native BPM, warp mode, and file path in the clip's TOML
+4. Detects the musical key — chroma analysis + Krumhansl-Schmuckler key-profile correlation
+   (no reliable filename heuristic exists for key, so this always runs via signal analysis)
+5. Stores native BPM, warp mode, detected key/scale, and file path in the clip's TOML
 
 The clip is then ready to be placed in the arrangement and will be time-stretched to the project BPM at export.
+Detected key/scale are informational (`clip show` → `detected_key`/`detected_scale`) — they don't
+affect rendering, but help an agent pick/transpose material that fits the project's `key`/`scale`.
 
 ```bash
-# Import an audio file — native BPM and warp mode auto-detected
+# Import an audio file — native BPM, warp mode, and key auto-detected
 mendell clip import <project> <track> <clip-name> --sample /path/to/loop.wav
 
 # Import shows what was detected:
 # → {"ok": true, "data": {"clip": "loop", "native_bpm": 135.0, "warp": "beats", "source": "tempo_analysis"}}
+# `clip show` additionally reports detected_key / detected_scale, e.g. "A" / "minor"
 
 # Link in place instead of copying
 mendell clip import <project> <track> <clip-name> --sample /path/to/loop.wav --link
@@ -327,6 +338,11 @@ mendell mix fx add <project> <track> reverb --room 0.6 --wet 0.3
 mendell mix fx set <project> <track> 0 --room 0.8     # update by id
 mendell mix fx remove <project> <track> 0
 mendell mix fx list <project> <track> [--json]
+
+# Apply a curated, named FX chain in one shot — appends each preset slot via
+# the normal `fx add` path (stable ids, validated params), so re-running it
+# stacks another copy rather than replacing the existing chain.
+mendell mix fx apply <project> <track> lofi-vinyl|tape-warmth|radio|telephone|spacious|punch [--json]
 ```
 
 ### Automation
@@ -476,6 +492,7 @@ mendell export <project> --format mp3                  # render to <project>/exp
 mendell export <project> --out ./render.wav            # explicit path overrides the default
 mendell export <project> --out ./render.wav --stems    # one file per track
 mendell export <project> --out ./render.mp3
+mendell export <project> --dry-run                     # plan only — no audio rendered, nothing written
 ```
 
 `--out` is optional. When omitted, export writes to a consistent, predictable
@@ -490,6 +507,26 @@ Export emits NDJSON progress events to stdout:
 ```json
 {"event": "export_progress", "pct": 42}
 {"event": "export_complete", "path": "./render.wav", "duration_s": 124.5}
+```
+
+#### Dry run (`--dry-run`)
+
+Builds the exact same render plan export would execute — duration, the resolved
+output path, every track's type/active/mute/solo/placement-count/FX-chain, and a
+list of warnings (missing sample/clip files, a warped clip needing `rubberband`
+when it isn't installed, an empty arrangement, no active audio-producing track) —
+without rendering a single sample or touching disk. Useful for an agent to sanity
+check a long render, or diagnose "why did export produce silence/fail" up front:
+
+```bash
+mendell export <project> --dry-run --json
+# → {"ok": true, "data": {
+#     "project": "my-song", "bpm": 128.0, "sample_rate": 44100,
+#     "duration_s": 32.0, "out_path": ".../export/my-song.wav", "would_write_stems": false,
+#     "tracks": [{"name": "drums", "type": "midi", "active": null, "muted": false,
+#                 "soloed": false, "placements": 1, "fx_chain": []}, ...],
+#     "warnings": []
+# }}
 ```
 
 ---

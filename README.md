@@ -81,6 +81,20 @@ mendell kit load my-song kit ./drum-one-shots/ --json  # auto-map kick/snare/hat
 mendell export my-song --json                        # renders to my-song/export/my-song.wav
 ```
 
+No drum loops handy? Generate a pattern straight onto a track:
+
+```bash
+mendell midi generate my-song drums fill --style trap --bars 2 --json
+```
+
+And before committing to a long render, check the plan first — duration, which
+tracks are active, FX chains, and any missing-file/missing-`rubberband` problems
+— without rendering any audio:
+
+```bash
+mendell export my-song --dry-run --json
+```
+
 Or build one up from the primitives directly:
 
 ```bash
@@ -104,8 +118,9 @@ mendell sampler map add my-song kit --note C2 --sample kick.wav --json
 # Place clips in the arrangement
 mendell arrange place my-song drums drums-clip --bar 1 --json
 
-# Mix
+# Mix — set vol/pan, or drop in a curated FX chain in one shot
 mendell mix set my-song drums --vol 90 --pan -10 --json
+mendell mix fx apply my-song drums lofi-vinyl --json
 
 # Render to audio — writes to my-song/export/my-song.wav by default;
 # pass --out to choose an explicit path, or --format mp3 to change the default's extension

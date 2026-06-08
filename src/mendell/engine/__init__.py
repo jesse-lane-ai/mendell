@@ -4,6 +4,7 @@ WAV/MP3, with NDJSON progress events and optional per-track stems.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +14,13 @@ import soundfile as sf
 from .. import arrangement as arrangement_mod
 from .. import clips as clips_mod
 from .. import project as project_mod
+from .. import sampler as sampler_mod
 from .. import tracks as tracks_mod
 from ..errors import BadInputError, EngineError
 from ..fx import processors as fx_processors
 from ..output import emit_event
 from ..timing import bar_beat_to_frames
+from . import render
 from .render import (
     RenderContext,
     apply_track_processing,
@@ -92,6 +95,94 @@ def _resolve_out_path(project_dir: Path, proj_data: dict[str, Any], *, out: str 
 
     project_name = proj_data.get("project", {}).get("name") or project_dir.name
     return project_dir / DEFAULT_EXPORT_DIR / f"{project_name}{suffix}"
+
+
+def preview(project_dir: Path, *, out: str | None = None, format: str | None = None,
+            stems: bool = False) -> dict[str, Any]:
+    """Build the same render plan `export()` would execute — duration, active
+    tracks, FX chains, where the file would land — without rendering any audio
+    or touching disk. Lets an agent sanity-check a long render before paying
+    for it, and surfaces missing-file/missing-binary problems up front."""
+    tp = project_mod.timing_params(project_dir)
+    proj_data = project_mod.load(project_dir)
+
+    out_path = _resolve_out_path(project_dir, proj_data, out=out, fmt=format)
+
+    arrangement_data = arrangement_mod.load(project_dir)
+    placements = arrangement_data.get("clips", [])
+    track_names = [t["name"] for t in tracks_mod.list_tracks(project_dir)]
+    if not track_names:
+        raise EngineError("nothing to export — project has no tracks")
+
+    total_frames = _total_frames(project_dir, tp, placements)
+
+    track_data = {name: tracks_mod.load(project_dir, name) for name in track_names}
+    mixers = {name: {**tracks_mod.MIXER_DEFAULTS, **data.get("mixer", {})} for name, data in track_data.items()}
+    audio_producing = {name for name, data in track_data.items() if data["track"]["type"] in ("audio", "sampler")}
+    soloed = [name for name in audio_producing if mixers[name]["solo"]]
+    active = set(soloed) if soloed else {name for name in audio_producing if not mixers[name]["mute"]}
+
+    warnings: list[str] = []
+    needs_rubberband = False
+
+    tracks_plan: list[dict[str, Any]] = []
+    for name in track_names:
+        data = track_data[name]
+        ttype = data["track"]["type"]
+        track_placements = [p for p in placements if p["track"] == name]
+        is_renderable = ttype in ("audio", "sampler")
+
+        tracks_plan.append({
+            "name": name,
+            "type": ttype,
+            "active": (name in active) if is_renderable else None,
+            "muted": mixers[name]["mute"] if name in mixers else False,
+            "soloed": mixers[name]["solo"] if name in mixers else False,
+            "placements": len(track_placements),
+            "fx_chain": [{"id": s["id"], "type": s["type"]} for s in data.get("fx", [])],
+        })
+
+        if ttype == "audio":
+            for placement in track_placements:
+                clip_data = clips_mod.load(project_dir, placement["clip"])
+                clip = clip_data.get("clip", {})
+                source = clip.get("source", "")
+                if not Path(source).is_file():
+                    warnings.append(
+                        f"audio track '{name}', clip '{clip.get('name')}': source file missing — "
+                        f"'{source}' (re-import it with `mendell clip import ... --sample <path>`)"
+                    )
+                if clip.get("warp", "off") != "off":
+                    needs_rubberband = True
+        elif ttype == "sampler" and sampler_mod.exists(project_dir, name):
+            sampler_data = sampler_mod.load(project_dir, name)
+            for slot in sampler_data.get("slots", []):
+                if not Path(slot["sample"]).is_file():
+                    warnings.append(
+                        f"sampler track '{name}', note {slot.get('note')}: sample file missing — "
+                        f"'{slot['sample']}' (re-map it with `mendell sampler map add`)"
+                    )
+
+    if needs_rubberband and shutil.which("rubberband") is None:
+        warnings.append(
+            "this render needs the 'rubberband' CLI tool for time-stretching/pitch-shifting "
+            f"warped audio clips, but it isn't installed or isn't on PATH; {render.RUBBERBAND_INSTALL_HINT}"
+        )
+    if total_frames <= 0:
+        warnings.append("arrangement is empty — export would produce no audio")
+    elif not any(t["active"] for t in tracks_plan if t["active"] is not None):
+        warnings.append("no audio-producing track is active (everything muted, or solo set elsewhere) — export would produce silence")
+
+    return {
+        "project": proj_data.get("project", {}).get("name") or project_dir.name,
+        "bpm": tp["bpm"],
+        "sample_rate": tp["sample_rate"],
+        "duration_s": round(total_frames / tp["sample_rate"], 3) if total_frames > 0 else 0.0,
+        "out_path": str(out_path),
+        "would_write_stems": bool(stems),
+        "tracks": tracks_plan,
+        "warnings": warnings,
+    }
 
 
 def export(project_dir: Path, *, out: str | None = None, format: str | None = None,

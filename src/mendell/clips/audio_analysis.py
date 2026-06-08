@@ -19,6 +19,15 @@ import numpy as np
 
 WARP_MODES = ("beats", "melodic", "harmonic", "vocal", "complex")
 
+PITCH_CLASS_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+# Krumhansl-Schmuckler key profiles — relative perceived stability of each
+# pitch class within a major/minor tonal context, starting from the tonic.
+# Estimating a key means rotating these to all 12 roots and correlating each
+# against the clip's chroma-energy distribution; the best match wins.
+_KS_MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_KS_MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
 _FILENAME_WARP_KEYWORDS: dict[str, tuple[str, ...]] = {
     "beats": ("drum", "loop", "beat", "perc", "hat", "kick", "snare"),
     "melodic": ("bass", "lead", "melody", "arp", "mono"),
@@ -67,6 +76,7 @@ class _AnalysisCache:
         self._percussive: np.ndarray | None = None
         self._f0: np.ndarray | None = None
         self._voiced_ratio: float | None = None
+        self._chroma_energy: np.ndarray | None = None
 
     def _load(self):
         if self._y is None:
@@ -141,6 +151,14 @@ class _AnalysisCache:
         std = float(np.std(voiced))
         return std / mean if mean > 0 else 1.0
 
+    def chroma_energy(self) -> np.ndarray:
+        """Mean energy per pitch class (C, C#, D, ...) across the clip — the
+        input to Krumhansl-Schmuckler key estimation."""
+        if self._chroma_energy is None:
+            chroma = librosa.feature.chroma_cqt(y=self.y, sr=self.sr)
+            self._chroma_energy = chroma.mean(axis=1)
+        return self._chroma_energy
+
     def formant_strength(self) -> float:
         """Crude formant-structure proxy: spectral-contrast variance in the
         speech-relevant bands. Higher implies stronger formant structure."""
@@ -151,6 +169,23 @@ class _AnalysisCache:
 def detect_bpm_via_analysis(path: str, cache: _AnalysisCache | None = None) -> float:
     cache = cache or _AnalysisCache(path)
     return round(cache.tempo(), 2)
+
+
+def detect_key_via_analysis(path: str, cache: _AnalysisCache | None = None) -> tuple[str, str]:
+    """Krumhansl-Schmuckler key estimation: rotate the major/minor profiles to
+    all 12 roots, correlate each against the clip's chroma-energy distribution,
+    and return the (root, scale) pair with the strongest correlation."""
+    cache = cache or _AnalysisCache(path)
+    energy = cache.chroma_energy()
+
+    best = ("C", "major", -np.inf)
+    for shift in range(12):
+        for scale, profile in (("major", _KS_MAJOR_PROFILE), ("minor", _KS_MINOR_PROFILE)):
+            score = float(np.corrcoef(energy, np.roll(profile, shift))[0, 1])
+            if score > best[2]:
+                best = (PITCH_CLASS_NAMES[shift], scale, score)
+
+    return best[0], best[1]
 
 
 def detect_warp_via_analysis(path: str, cache: _AnalysisCache | None = None) -> str:
@@ -175,16 +210,20 @@ def detect_warp_via_analysis(path: str, cache: _AnalysisCache | None = None) -> 
 
 
 def analyze_clip(path: str, filename: str) -> dict[str, Any]:
-    """Run the full two-stage detection pipeline for native BPM and warp mode.
+    """Run the full detection pipeline for native BPM, warp mode, and musical
+    key. BPM/warp use the two-stage filename-then-signal-analysis pipeline
+    from SPEC.md; key has no reliable filename heuristic, so it always comes
+    from chroma analysis (Krumhansl-Schmuckler key-finding).
 
-    Returns {"native_bpm", "warp", "source"} where `source` records which
-    stage produced the *warp* result (bpm uses the same precedence but isn't
-    separately reported, per the example in SPEC.md).
+    Returns {"native_bpm", "warp", "source", "key", "scale"} where `source`
+    records which stage produced the *warp* result (bpm uses the same
+    precedence but isn't separately reported, per the example in SPEC.md).
     """
     warp = detect_warp_from_filename(filename)
     bpm = detect_bpm_from_filename(filename)
     source = "filename" if warp is not None else None
 
+    cache = None
     if warp is None or bpm is None:
         cache = _AnalysisCache(path)
         if warp is None:
@@ -194,4 +233,6 @@ def analyze_clip(path: str, filename: str) -> dict[str, Any]:
             bpm = detect_bpm_via_analysis(path, cache)
             source = source or "tempo_analysis"
 
-    return {"native_bpm": bpm, "warp": warp, "source": source or "filename"}
+    key, scale = detect_key_via_analysis(path, cache)
+
+    return {"native_bpm": bpm, "warp": warp, "source": source or "filename", "key": key, "scale": scale}

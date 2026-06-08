@@ -235,6 +235,8 @@ def _import_audio_clip(
             "native_bpm": float(resolved_bpm),
             "warp": resolved_warp,
             "detected_source": source,
+            "detected_key": detected.get("key"),
+            "detected_scale": detected.get("scale"),
         },
         "params": {
             **AUDIO_DEFAULTS,
@@ -280,6 +282,8 @@ def show(project_dir: Path, track_name: str, clip_name: str) -> dict[str, Any]:
             "native_bpm": clip.get("native_bpm"),
             "warp": clip.get("warp"),
             "detected_source": clip.get("detected_source"),
+            "detected_key": clip.get("detected_key"),
+            "detected_scale": clip.get("detected_scale"),
             "params": data.get("params", dict(AUDIO_DEFAULTS)),
             "length_seconds": data.get("length_seconds"),
             "warp_markers": data.get("warp_markers", []),

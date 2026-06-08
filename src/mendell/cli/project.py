@@ -30,9 +30,14 @@ def new(name, bpm, key, scale, sample_rate, time_sig):
         if v is not None:
             kwargs[k] = v
 
-    project_dir = project_mod.create(Path.cwd(), name, **kwargs)
+    # `name` may be a path (e.g. `mendell new /songs/my-song` or `mendell new
+    # sub/my-song`) — split it into parent dir + bare project name so the
+    # stored `project.name` is always just the directory's basename, never a
+    # path string (which would otherwise corrupt default export-path resolution).
+    target = Path.cwd() / name
+    project_dir = project_mod.create(target.parent, target.name, **kwargs)
     data = project_mod.info(project_dir)
-    return data, f"created project '{name}' at {project_dir}"
+    return data, f"created project '{target.name}' at {project_dir}"
 
 
 @click.command("info")

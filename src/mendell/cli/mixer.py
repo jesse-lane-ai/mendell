@@ -3,6 +3,7 @@
 import click
 
 from .. import mixer as mixer_mod
+from ..fx import presets as fx_presets
 from ..fx import schema as fx_schema
 from ..paths import resolve_project
 from ._base import command, json_option
@@ -106,6 +107,21 @@ def fx_set(project, track, fx_id, params):
     project_dir = resolve_project(project)
     raw = _parse_fx_params(None, params)
     data = mixer_mod.fx_set(project_dir, track, fx_id, **raw)
+    return data, data
+
+
+@fx.command("apply")
+@click.argument("project")
+@click.argument("track")
+@click.argument("preset", type=click.Choice(fx_presets.PRESET_NAMES))
+@json_option
+@command
+def fx_apply(project, track, preset):
+    """Append a curated FX-chain PRESET (e.g. lofi-vinyl, tape-warmth, radio,
+    telephone, spacious, punch) to TRACK in one shot, instead of building it
+    slot-by-slot with `fx add`."""
+    project_dir = resolve_project(project)
+    data = mixer_mod.fx_apply_preset(project_dir, track, preset)
     return data, data
 
 

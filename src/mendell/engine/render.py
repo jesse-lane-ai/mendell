@@ -20,6 +20,7 @@ from .. import sampler as sampler_mod
 from .. import tracks as tracks_mod
 from ..errors import EngineError
 from ..fx import processors as fx_processors
+from ..notes import midi_to_note_name
 from . import dsp
 
 
@@ -108,7 +109,7 @@ def _find_slot(slots: list[dict[str, Any]], note: int) -> dict[str, Any] | None:
 _SAMPLE_CACHE: dict[str, np.ndarray] = {}
 
 
-_RUBBERBAND_INSTALL_HINT = (
+RUBBERBAND_INSTALL_HINT = (
     "install it with 'sudo apt install rubberband-cli' (Debian/Ubuntu), "
     "'brew install rubberband' (macOS), or 'sudo pacman -S rubberband' (Arch), "
     "then re-run export"
@@ -178,12 +179,13 @@ def render_sampler_track(ctx: RenderContext, track_name: str, midi_events: list[
         if slot is None:
             continue
 
+        note_ctx = f"sampler track '{track_name}', note {midi_to_note_name(event.note)} (slot mapped to {midi_to_note_name(slot['note_low'])}-{midi_to_note_name(slot['note_high'])})"
         try:
             sample = _load_sample(slot["sample"], ctx.sample_rate)
-        except EngineError:
-            raise
+        except EngineError as err:
+            raise EngineError(f"{note_ctx}: {err}")
         except Exception as err:
-            raise EngineError(f"could not read sample '{slot['sample']}': {err}")
+            raise EngineError(f"{note_ctx}: could not read sample '{slot['sample']}': {err}")
 
         cents = slot.get("tune", 0) + global_tune
         semitone_offset = (event.note - slot["root"]) if slot.get("pitch_follow", True) else 0
@@ -239,7 +241,7 @@ def _stretch_and_pitch(y: np.ndarray, sample_rate: int, *, stretch_ratio: float,
     if needs_rubberband and shutil.which("rubberband") is None:
         raise EngineError(
             "this clip needs time-stretching or pitch-shifting, which requires the "
-            f"'rubberband' command-line tool — it isn't installed or isn't on PATH; {_RUBBERBAND_INSTALL_HINT}"
+            f"'rubberband' command-line tool — it isn't installed or isn't on PATH; {RUBBERBAND_INSTALL_HINT}"
         )
 
     out = y
@@ -276,21 +278,26 @@ def render_audio_track(ctx: RenderContext, track_name: str) -> np.ndarray:
         loop_start = float(params.get("loop_start", 0.0))
         loop_end = params.get("loop_end")
 
+        clip_ctx = f"audio track '{track_name}', clip '{clip.get('name')}'"
         source = clip.get("source", "")
         if not Path(source).is_file():
-            raise EngineError(_missing_file_hint(
-                source, what=f"audio clip '{clip.get('name')}' source",
-                fix="re-import it with `mendell clip import ... --sample <path>`.",
-            ))
+            raise EngineError(
+                f"{clip_ctx}: source file is missing on disk: '{source}' — it may have been moved, "
+                f"deleted, or referenced via --link from a path that no longer exists. "
+                f"re-import it with `mendell clip import ... --sample <path>`."
+            )
         try:
             y, sr = sf.read(source, always_2d=True, dtype="float64")
         except Exception as err:
-            raise EngineError(f"could not read audio clip '{clip.get('name')}' ('{source}'): {err}")
+            raise EngineError(f"{clip_ctx}: could not read audio from '{source}': {err}")
         if sr != ctx.sample_rate:
             y = dsp.resample_by_ratio(y, sr / ctx.sample_rate)
 
         stretch_ratio = (ctx.bpm / native_bpm) if warp != "off" else 1.0
-        rendered = _stretch_and_pitch(y, ctx.sample_rate, stretch_ratio=stretch_ratio, pitch_semitones=pitch)
+        try:
+            rendered = _stretch_and_pitch(y, ctx.sample_rate, stretch_ratio=stretch_ratio, pitch_semitones=pitch)
+        except EngineError as err:
+            raise EngineError(f"{clip_ctx}: {err}")
         rendered = dsp.to_stereo(rendered) * gain
 
         end = ctx.slot_end(track_name, placement["frame"])
@@ -364,7 +371,14 @@ def apply_track_processing(ctx: RenderContext, track_name: str, buf: np.ndarray)
             curve = _track_param_curve(ctx, track_data, f"fx.{slot['id']}.{pname}", None)
             if isinstance(curve, np.ndarray):
                 params[pname] = float(np.mean(curve))
-        out = fx_processors.process(slot["type"], out, params, sample_rate=ctx.sample_rate, bpm=ctx.bpm)
+        try:
+            out = fx_processors.process(slot["type"], out, params, sample_rate=ctx.sample_rate, bpm=ctx.bpm)
+        except Exception as err:
+            raise EngineError(
+                f"track '{track_name}', FX slot #{slot['id']} ({slot['type']}): {err} — "
+                f"check its parameters with `mendell mix fx list <project> {track_name}` "
+                f"and adjust with `mendell mix fx set <project> {track_name} {slot['id']} --<param> <value>`"
+            )
 
     if isinstance(vol_curve, np.ndarray):
         gain = vol_curve / 100.0

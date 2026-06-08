@@ -13,8 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import mido
-
 from . import arrangement as arrangement_mod
 from . import clips as clips_mod
 from . import project as project_mod
@@ -22,8 +20,8 @@ from . import routing as routing_mod
 from . import sampler as sampler_mod
 from . import tracks as tracks_mod
 from .errors import BadInputError
+from .midi_gen import write_pattern_midi
 
-PATTERN_PPQ = 480
 ARRANGEMENT_BARS = 8.0
 
 DRUM_TRACK = "drums"
@@ -81,31 +79,6 @@ STYLES: dict[str, dict[str, Any]] = {
 }
 
 
-def _write_pattern_midi(path: Path, pattern: list[tuple[float, int, int, float]]) -> None:
-    """Render a flat list of (beat, note, velocity, length_beats) events to a
-    single-track .mid file at PATTERN_PPQ ticks per beat."""
-    events: list[tuple[int, int, int, int]] = []  # (abs_tick, kind, note, velocity); kind 1=on, 0=off
-    for beat, note, velocity, length_beats in pattern:
-        start_tick = round(beat * PATTERN_PPQ)
-        end_tick = max(round((beat + length_beats) * PATTERN_PPQ), start_tick + 1)
-        events.append((start_tick, 1, note, velocity))
-        events.append((end_tick, 0, note, 0))
-    events.sort(key=lambda e: (e[0], e[1]))  # note_off (0) before note_on (1) at the same tick
-
-    mid = mido.MidiFile(ticks_per_beat=PATTERN_PPQ)
-    track = mido.MidiTrack()
-    mid.tracks.append(track)
-
-    last_tick = 0
-    for abs_tick, kind, note, velocity in events:
-        msg_type = "note_on" if kind == 1 else "note_off"
-        track.append(mido.Message(msg_type, note=note, velocity=velocity, time=abs_tick - last_tick))
-        last_tick = abs_tick
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mid.save(str(path))
-
-
 def new(parent: Path, name: str, *, style: str) -> dict[str, Any]:
     style = style.lower()
     if style not in STYLES:
@@ -120,7 +93,7 @@ def new(parent: Path, name: str, *, style: str) -> dict[str, Any]:
     routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
 
     pattern_path = project_dir / "midi" / PATTERN_FILENAME
-    _write_pattern_midi(pattern_path, preset["pattern"])
+    write_pattern_midi(pattern_path, preset["pattern"])
     clips_mod.import_clip(project_dir, DRUM_TRACK, PATTERN_CLIP, midi_path=str(pattern_path))
     clips_mod.set_params(project_dir, DRUM_TRACK, PATTERN_CLIP, loop=True)
 
