@@ -101,6 +101,78 @@ def test_guess_category_falls_back_to_parent_folder():
     assert library.guess_category(Path("Misc/totally-unrecognized.wav")) == "one-shot"
 
 
+# --- BPM detection -----------------------------------------------------------
+
+def test_add_caches_bpm_from_filename_for_any_category(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    (folder / "Kicks").mkdir(parents=True)
+    (folder / "Loops").mkdir()
+    (folder / "Kicks" / "kick-808-90bpm.wav").write_bytes(b"fake")
+    (folder / "Loops" / "dark-loop-135bpm.wav").write_bytes(b"fake")
+    (folder / "Loops" / "no-tempo-hint.wav").write_bytes(b"fake")
+
+    entry = library.show(library.add("pack", str(folder))["name"])
+    by_ref = {f["ref"]: f for f in entry["files"]}
+
+    assert by_ref["pack/Kicks/kick-808-90bpm.wav"]["bpm"] == 90.0
+    assert by_ref["pack/Kicks/kick-808-90bpm.wav"]["bpm_source"] == "filename"
+    assert by_ref["pack/Loops/dark-loop-135bpm.wav"]["bpm"] == 135.0
+    assert "bpm" not in by_ref["pack/Loops/no-tempo-hint.wav"]
+
+
+def test_analyze_flag_runs_signal_analysis_only_for_loops_without_filename_bpm(lib_config, tmp_path, monkeypatch):
+    folder = tmp_path / "pack"
+    (folder / "Kicks").mkdir(parents=True)
+    (folder / "Loops").mkdir()
+    (folder / "Kicks" / "kick-no-hint.wav").write_bytes(b"fake")       # one-shot, no filename bpm
+    (folder / "Loops" / "loop-no-hint.wav").write_bytes(b"fake")       # loop, no filename bpm
+    (folder / "Loops" / "loop-128bpm.wav").write_bytes(b"fake")        # loop, has filename bpm
+
+    analyzed = []
+    monkeypatch.setattr(
+        library.audio_analysis, "detect_bpm_via_analysis",
+        lambda path, cache=None: analyzed.append(path) or 99.0,
+    )
+
+    entry = library.show(library.add("pack", str(folder), analyze=True)["name"])
+    by_ref = {f["ref"]: f for f in entry["files"]}
+
+    # Only the loop lacking a filename hint should trigger real analysis.
+    assert len(analyzed) == 1
+    assert analyzed[0].endswith("loop-no-hint.wav")
+    assert by_ref["pack/Loops/loop-no-hint.wav"] == {
+        "ref": "pack/Loops/loop-no-hint.wav", "category": "loop", "bpm": 99.0, "bpm_source": "tempo_analysis",
+    }
+    assert "bpm" not in by_ref["pack/Kicks/kick-no-hint.wav"]
+    assert by_ref["pack/Loops/loop-128bpm.wav"]["bpm_source"] == "filename"
+
+
+def test_analyze_defaults_to_off(lib_config, tmp_path, monkeypatch):
+    folder = tmp_path / "pack"
+    (folder / "Loops").mkdir(parents=True)
+    (folder / "Loops" / "loop-no-hint.wav").write_bytes(b"fake")
+
+    monkeypatch.setattr(
+        library.audio_analysis, "detect_bpm_via_analysis",
+        lambda path, cache=None: pytest.fail("signal analysis should not run without --analyze"),
+    )
+    library.add("pack", str(folder))  # analyze=False by default
+
+
+# --- search by BPM ------------------------------------------------------------
+
+def test_search_by_bpm_within_tolerance(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    (folder / "loop-128bpm.wav").write_bytes(b"fake")
+    (folder / "loop-129bpm.wav").write_bytes(b"fake")
+    (folder / "loop-140bpm.wav").write_bytes(b"fake")
+    library.add("pack", str(folder))
+
+    refs = sorted(m["ref"] for m in library.search(bpm=128.0)["matches"])
+    assert refs == ["pack/loop-128bpm.wav", "pack/loop-129bpm.wav"]
+
+
 # --- search ------------------------------------------------------------------
 
 def test_search_by_query_and_category(lib_config, sample_folder):

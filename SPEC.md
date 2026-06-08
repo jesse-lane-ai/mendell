@@ -214,25 +214,57 @@ nothing about the design assumes a single sample root.
 ```bash
 # Register an external folder under a short name. Recurses by default; doesn't copy
 # anything — the library only ever stores paths + metadata, never sample audio itself.
-mendell library add <name> <path> [--tags drums,lofi,kicks] [--json]
+# Indexes every file once: guesses category (kick/snare/hat/loop/...) and BPM from
+# its filename, and caches both — see "Indexing & BPM detection" below.
+mendell library add <name> <path> [--tags drums,lofi,kicks] [--analyze] [--json]
 
 # List every registered folder (name, path, tags, file count, last-scanned time)
 mendell library list [--json]
 
 # Re-scan a folder (or all of them) — picks up files added/removed since registration
-mendell library scan [<name>] [--json]
+# and rebuilds the cached category/BPM index
+mendell library scan [<name>] [--analyze] [--json]
 
-# Inspect one registered folder — full file listing with detected category per file
-# (kick/snare/hat/loop/one-shot/... via the same filename heuristics `kit load` uses)
+# Inspect one registered folder — full file listing with detected category and
+# (where known) BPM per file, as ready-to-use refs
 mendell library show <name> [--json]
 
 # Search across all registered folders (or scope to one with --library) by filename
-# keyword and/or tag — the building block agents use to find material without
-# knowing any paths up front
-mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--json]
+# keyword, tag, category, and/or BPM (±2 BPM tolerance) — the building block agents
+# use to find material without knowing any paths up front
+mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--bpm <n>] [--json]
 
 # Unregister (does not touch the folder or its files on disk)
 mendell library remove <name>
+```
+
+### Indexing & BPM Detection
+
+`library add`/`library scan` walk the registered folder once and cache, per file,
+the same two things `kit load` and `clip import` already derive: a **category**
+guess (kick/snare/hat/loop/one-shot/... from filename and parent-folder keywords)
+and a **BPM** guess.
+
+BPM detection is two-tier, mirroring the `clip import` pipeline (see "Audio Clips"):
+
+- **Filename pass (always runs, instant):** the same `<number>bpm` / bare-number
+  pattern matching `clip import` uses — e.g. `loop-135bpm.wav` → `135.0`,
+  `source: "filename"`.
+- **Signal-analysis pass (opt-in via `--analyze`, slower):** real tempo detection
+  via `librosa` — reserved for files categorized as `loop` that have no filename
+  BPM hint, since one-shots (kicks, claps, hats, ...) don't have a meaningful
+  tempo and running full analysis across a large pack of them would make
+  indexing sluggish for no payoff.
+
+Both checks are cheap to skip — files with no detectable BPM simply omit the field.
+
+```bash
+mendell library search "808" --bpm 90 --json
+```
+```json
+{ "ok": true, "data": { "matches": [
+  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "loop", "bpm": 90.0, "bpm_source": "filename", "tags": ["drums", "lofi"] }
+] } }
 ```
 
 Once registered, library entries plug directly into the commands that already accept a

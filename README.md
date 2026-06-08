@@ -103,16 +103,17 @@ and reference it from any project from then on — Mendell remembers it globally
 like:
 
 ```bash
-mendell library add my-drums ~/Samples/drum-one-shots --tags drums,lofi --json
-mendell library search 808 --category kick --json     # find samples by name/category, no path-hunting
-mendell kit load my-song kit --library my-drums --json # load a registered folder straight onto a track
+mendell library add my-loops ~/Samples/lofi-loops --tags loops,lofi --json
+mendell library search --bpm 90 --category loop --json   # find loops by tempo, no path-hunting
+mendell kit load my-song kit --library my-drums --json   # load a registered folder straight onto a track
 mendell sampler map add my-song kit --note C2 --sample my-drums/Kicks/808.wav --json
 ```
 
-`library add`/`library scan` index each folder's files and guess a category per
-file (kick/snare/hat/loop/...) so `library search`/`library show` can answer
-instantly — no path required, agent-friendly by design. See
-[`SPEC.md`](SPEC.md#sample-library) for the full reference.
+`library add`/`library scan` index each folder's files once and cache a guessed
+category (kick/snare/hat/loop/...) and BPM (from the filename, instantly — pass
+`--analyze` to also tempo-detect loops with no filename hint) per file, so
+`library search`/`library show` answer immediately — no path-hunting, agent-friendly
+by design. See [`SPEC.md`](SPEC.md#sample-library) for the full reference.
 
 Or build one up from the primitives directly:
 

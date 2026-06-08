@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import sampler as sampler_mod
+from .clips import audio_analysis
 from .errors import BadInputError, NotFoundError
 from .toml_io import read_toml, write_toml
 
@@ -90,14 +91,35 @@ def _scan_folder(path: Path) -> list[Path]:
     )
 
 
-def _index_folder(folder: Path) -> list[dict[str, Any]]:
-    """Walk `folder` once and cache each file's relative path + guessed
-    category — the result `add`/`scan` persist so `search`/`show` can read
-    straight from the registry instead of re-walking and re-guessing."""
-    return [
-        {"path": str(file_path.relative_to(folder)), "category": guess_category(file_path)}
-        for file_path in _scan_folder(folder)
-    ]
+def _detect_bpm(file_path: Path, category: str, *, analyze: bool) -> tuple[float | None, str | None]:
+    """BPM guess for a cached file: an instant filename-keyword/number check
+    always runs; full signal analysis (slow — loads and tempo-analyzes the
+    audio) is reserved for `loop`-categorized files and only runs when the
+    caller opts in via `analyze=True`, since one-shots don't have a
+    meaningful tempo and indexing a large pack would otherwise be sluggish."""
+    bpm = audio_analysis.detect_bpm_from_filename(file_path.name)
+    if bpm is not None:
+        return bpm, "filename"
+    if analyze and category == "loop":
+        return audio_analysis.detect_bpm_via_analysis(str(file_path)), "tempo_analysis"
+    return None, None
+
+
+def _index_folder(folder: Path, *, analyze: bool = False) -> list[dict[str, Any]]:
+    """Walk `folder` once and cache each file's relative path, guessed
+    category, and detected BPM — the result `add`/`scan` persist so
+    `search`/`show` can read straight from the registry instead of
+    re-walking, re-guessing, and re-analyzing on every call."""
+    indexed = []
+    for file_path in _scan_folder(folder):
+        category = guess_category(file_path)
+        bpm, bpm_source = _detect_bpm(file_path, category, analyze=analyze)
+        entry = {"path": str(file_path.relative_to(folder)), "category": category}
+        if bpm is not None:
+            entry["bpm"] = bpm
+            entry["bpm_source"] = bpm_source
+        indexed.append(entry)
+    return indexed
 
 
 def _cached_files(entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -123,7 +145,7 @@ def guess_category(file_path: Path) -> str:
 # registry management
 # ---------------------------------------------------------------------------
 
-def add(name: str, path: str, *, tags: list[str] | None = None) -> dict[str, Any]:
+def add(name: str, path: str, *, tags: list[str] | None = None, analyze: bool = False) -> dict[str, Any]:
     folder = Path(path).expanduser()
     if not folder.is_dir():
         raise BadInputError(f"folder not found: {path}")
@@ -131,7 +153,7 @@ def add(name: str, path: str, *, tags: list[str] | None = None) -> dict[str, Any
 
     data = _load()
     entry = _find(data, name)
-    indexed = _index_folder(folder)
+    indexed = _index_folder(folder, analyze=analyze)
     if entry is None:
         entry = {"name": name, "path": str(folder), "tags": list(tags or [])}
         _entries(data).append(entry)
@@ -156,6 +178,14 @@ def remove(name: str) -> dict[str, Any]:
     return {"removed": name}
 
 
+def _file_summary(library_name: str, f: dict[str, Any]) -> dict[str, Any]:
+    summary = {"ref": f"{library_name}/{f['path']}", "category": f["category"]}
+    if "bpm" in f:
+        summary["bpm"] = f["bpm"]
+        summary["bpm_source"] = f["bpm_source"]
+    return summary
+
+
 def _summary(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": entry["name"],
@@ -171,7 +201,7 @@ def list_entries() -> dict[str, Any]:
     return {"libraries": [_summary(e) for e in _entries(data)]}
 
 
-def scan(name: str | None = None) -> dict[str, Any]:
+def scan(name: str | None = None, *, analyze: bool = False) -> dict[str, Any]:
     data = _load()
     targets = [_require(data, name)] if name is not None else _entries(data)
     if not targets:
@@ -182,7 +212,7 @@ def scan(name: str | None = None) -> dict[str, Any]:
         folder = Path(entry["path"])
         if not folder.is_dir():
             raise BadInputError(f"library '{entry['name']}' folder no longer exists: {entry['path']}")
-        indexed = _index_folder(folder)
+        indexed = _index_folder(folder, analyze=analyze)
         entry["files"] = indexed
         entry["file_count"] = len(indexed)
         entry["last_scanned"] = time.time()
@@ -196,16 +226,16 @@ def show(name: str) -> dict[str, Any]:
     data = _load()
     entry = _require(data, name)
 
-    files = [
-        {"ref": f"{name}/{f['path']}", "category": f["category"]}
-        for f in _cached_files(entry)
-    ]
+    files = [_file_summary(name, f) for f in _cached_files(entry)]
     return {**_summary(entry), "files": files}
+
+
+BPM_TOLERANCE = 2.0
 
 
 def search(
     query: str | None = None, *, library: str | None = None,
-    tag: str | None = None, category: str | None = None,
+    tag: str | None = None, category: str | None = None, bpm: float | None = None,
 ) -> dict[str, Any]:
     data = _load()
     entries = [_require(data, library)] if library is not None else _entries(data)
@@ -218,13 +248,11 @@ def search(
         for f in _cached_files(entry):
             if category is not None and f["category"] != category:
                 continue
+            if bpm is not None and (f.get("bpm") is None or abs(f["bpm"] - bpm) > BPM_TOLERANCE):
+                continue
             if needle is not None and needle not in Path(f["path"]).name.lower():
                 continue
-            matches.append({
-                "ref": f"{entry['name']}/{f['path']}",
-                "category": f["category"],
-                "tags": list(entry.get("tags", [])),
-            })
+            matches.append({**_file_summary(entry["name"], f), "tags": list(entry.get("tags", []))})
 
     return {"query": query, "matches": matches, "count": len(matches)}
 
