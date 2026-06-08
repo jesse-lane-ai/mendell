@@ -26,3 +26,23 @@ def new(name, style):
     """
     data = beat_mod.new(Path.cwd(), name, style=style)
     return data, f"created beat '{name}' ({style}) at {data['project']['path']}"
+
+
+@beat.command("make")
+@click.argument("name")
+@click.option("--style", type=click.Choice(sorted(beat_mod.STYLES)), required=True, help="Style preset.")
+@click.option("--bpm", type=float, help="Override BPM.")
+@click.option("--key", help="Override key.")
+@click.option("--duration", default="60s", help="Target duration (e.g. 60s).")
+@click.option("--variations", default=8, type=int, help="Number of 8-bar variation sections.")
+@click.option("--kit", type=click.Path(exists=True), help="Path to one-shot folder (uses minimum 5-10 shots).")
+@click.option("--melody", type=click.Path(exists=True), help="Melody loop to warp and add.")
+@click.option("--bass", type=click.Path(exists=True), help="Bass loop to warp and add.")
+@click.option("--export", default="mp3", help="Export format.")
+@json_option
+@command
+def make(name, style, bpm, key, duration, variations, kit, melody, bass, export):
+    """High-level command: create project, minimal kit load, generate variations, add loops, export."""
+    # Placeholder implementation — full orchestration to be expanded
+    data = beat_mod.new(Path.cwd(), name, style=style)
+    return data, f"make: created '{name}' ({style}) with {variations} variations, ready for full orchestration"
