@@ -158,6 +158,20 @@ pip install -e .
 mendell --help
 ```
 
-There is no separate test suite invocation beyond exercising the CLI itself —
-build a project end-to-end (`new` → tracks → clips → arrangement → mixer →
-`export`) and inspect the rendered output and `--json` responses.
+## Tests
+
+37 unit tests across three files, runnable with pytest (or `uv run pytest` if you use uv):
+
+```bash
+pytest tests/
+# or
+uv run pytest tests/
+```
+
+| File | Coverage |
+|------|----------|
+| `tests/test_beat.py` | `beat.new` / `beat.make` scaffolding, duration parsing, pattern generation, variation tiling |
+| `tests/test_durations.py` | `parse_duration_ms` / `format_duration_ms` edge cases |
+| `tests/test_library.py` | Sample library — add/scan/search/remove, BPM caching, category inference, env-var config isolation |
+
+All tests are pure unit tests (no audio rendering, no system dependencies) and run in under 20 seconds.
