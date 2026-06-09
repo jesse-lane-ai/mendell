@@ -1,7 +1,7 @@
 """Sample library — a small global registry of named external sample folders.
 
 Unlike everything else in Mendell, the library lives outside any project (in
-a user-level config file) so it persists across projects and can be reused
+a user-level SQLite database) so it persists across projects and can be reused
 from any of them. It only ever stores *references* (paths + lightweight
 filename-derived metadata) — sample audio is still copied into a project's
 ``samples/`` directory at the point of use, exactly as it always has been.
@@ -14,14 +14,15 @@ path>`` reference — or a bare registered name — into a real filesystem path.
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from . import sampler as sampler_mod
 from .clips import audio_analysis
 from .errors import BadInputError, NotFoundError
-from .toml_io import read_toml, write_toml
 
 AUDIO_EXTS = sampler_mod.AUDIO_EXTS
 
@@ -47,43 +48,59 @@ _CATEGORY_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
 ]
 
 
-def _config_path() -> Path:
+def _db_path() -> Path:
     override = os.environ.get(CONFIG_ENV_VAR)
     if override:
         return Path(override)
-    return Path.home() / ".config" / "mendell" / "library.toml"
+    return Path.home() / ".config" / "mendell" / "library.db"
 
 
-def _load() -> dict[str, Any]:
-    path = _config_path()
-    if not path.is_file():
-        return {"library": []}
-    data = read_toml(path)
-    data.setdefault("library", [])
-    return data
+@contextmanager
+def _conn():
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA foreign_keys=ON")
+    _migrate(con)
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
-def _save(data: dict[str, Any]) -> None:
-    write_toml(_config_path(), data)
+def _migrate(con: sqlite3.Connection) -> None:
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS libraries (
+            name         TEXT PRIMARY KEY,
+            path         TEXT NOT NULL,
+            tags         TEXT NOT NULL DEFAULT '',
+            file_count   INTEGER NOT NULL DEFAULT 0,
+            last_scanned REAL
+        );
+        CREATE TABLE IF NOT EXISTS files (
+            id           INTEGER PRIMARY KEY,
+            library_name TEXT NOT NULL REFERENCES libraries(name) ON DELETE CASCADE,
+            rel_path     TEXT NOT NULL,
+            category     TEXT NOT NULL,
+            bpm          REAL,
+            bpm_source   TEXT,
+            UNIQUE(library_name, rel_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_files_library  ON files(library_name);
+        CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
+        CREATE INDEX IF NOT EXISTS idx_files_bpm      ON files(bpm);
+    """)
 
 
-def _entries(data: dict[str, Any]) -> list[dict[str, Any]]:
-    return data["library"]
-
-
-def _find(data: dict[str, Any], name: str) -> dict[str, Any] | None:
-    for entry in _entries(data):
-        if entry["name"] == name:
-            return entry
-    return None
-
-
-def _require(data: dict[str, Any], name: str) -> dict[str, Any]:
-    entry = _find(data, name)
-    if entry is None:
-        raise NotFoundError(f"library '{name}' not registered")
-    return entry
-
+# ---------------------------------------------------------------------------
+# internal helpers
+# ---------------------------------------------------------------------------
 
 def _scan_folder(path: Path) -> list[Path]:
     return sorted(
@@ -92,11 +109,8 @@ def _scan_folder(path: Path) -> list[Path]:
 
 
 def _detect_bpm(file_path: Path, category: str, *, analyze: bool) -> tuple[float | None, str | None]:
-    """BPM guess for a cached file: an instant filename-keyword/number check
-    always runs; full signal analysis (slow — loads and tempo-analyzes the
-    audio) is reserved for `loop`-categorized files and only runs when the
-    caller opts in via `analyze=True`, since one-shots don't have a
-    meaningful tempo and indexing a large pack would otherwise be sluggish."""
+    """BPM guess for a cached file: filename check always runs; full signal
+    analysis (slow) is reserved for loop-categorized files when analyze=True."""
     bpm = audio_analysis.detect_bpm_from_filename(file_path.name)
     if bpm is not None:
         return bpm, "filename"
@@ -106,15 +120,11 @@ def _detect_bpm(file_path: Path, category: str, *, analyze: bool) -> tuple[float
 
 
 def _index_folder(folder: Path, *, analyze: bool = False) -> list[dict[str, Any]]:
-    """Walk `folder` once and cache each file's relative path, guessed
-    category, and detected BPM — the result `add`/`scan` persist so
-    `search`/`show` can read straight from the registry instead of
-    re-walking, re-guessing, and re-analyzing on every call."""
     indexed = []
     for file_path in _scan_folder(folder):
         category = guess_category(file_path)
         bpm, bpm_source = _detect_bpm(file_path, category, analyze=analyze)
-        entry = {"path": str(file_path.relative_to(folder)), "category": category}
+        entry: dict[str, Any] = {"path": str(file_path.relative_to(folder)), "category": category}
         if bpm is not None:
             entry["bpm"] = bpm
             entry["bpm_source"] = bpm_source
@@ -122,14 +132,43 @@ def _index_folder(folder: Path, *, analyze: bool = False) -> list[dict[str, Any]
     return indexed
 
 
-def _cached_files(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """Cached file index for `entry`, building it on the fly for entries
-    registered before caching existed (so old registries keep working)."""
-    files = entry.get("files")
-    if files is None:
-        folder = Path(entry["path"])
-        files = _index_folder(folder) if folder.is_dir() else []
-    return files
+def _require_library(con: sqlite3.Connection, name: str) -> sqlite3.Row:
+    row = con.execute("SELECT * FROM libraries WHERE name = ?", (name,)).fetchone()
+    if row is None:
+        raise NotFoundError(f"library '{name}' not registered")
+    return row
+
+
+def _write_files(con: sqlite3.Connection, name: str, indexed: list[dict[str, Any]]) -> None:
+    con.execute("DELETE FROM files WHERE library_name = ?", (name,))
+    con.executemany(
+        "INSERT INTO files (library_name, rel_path, category, bpm, bpm_source) VALUES (?,?,?,?,?)",
+        [
+            (name, f["path"], f["category"], f.get("bpm"), f.get("bpm_source"))
+            for f in indexed
+        ],
+    )
+
+
+def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "name": row["name"],
+        "path": row["path"],
+        "tags": [t for t in row["tags"].split(",") if t],
+        "file_count": row["file_count"],
+        "last_scanned": row["last_scanned"],
+    }
+
+
+def _file_row_to_summary(library_name: str, row: sqlite3.Row) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "ref": f"{library_name}/{row['rel_path']}",
+        "category": row["category"],
+    }
+    if row["bpm"] is not None:
+        summary["bpm"] = row["bpm"]
+        summary["bpm_source"] = row["bpm_source"]
+    return summary
 
 
 def guess_category(file_path: Path) -> str:
@@ -146,115 +185,147 @@ def guess_category(file_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def add(name: str, path: str, *, tags: list[str] | None = None, analyze: bool = False) -> dict[str, Any]:
-    folder = Path(path).expanduser()
+    folder = Path(path).expanduser().resolve()
     if not folder.is_dir():
         raise BadInputError(f"folder not found: {path}")
-    folder = folder.resolve()
 
-    data = _load()
-    entry = _find(data, name)
     indexed = _index_folder(folder, analyze=analyze)
-    if entry is None:
-        entry = {"name": name, "path": str(folder), "tags": list(tags or [])}
-        _entries(data).append(entry)
-    else:
-        entry["path"] = str(folder)
-        if tags is not None:
-            entry["tags"] = list(tags)
-    entry["files"] = indexed
-    entry["file_count"] = len(indexed)
-    entry["last_scanned"] = time.time()
+    tag_str = ",".join(tags or [])
+    now = time.time()
 
-    _entries(data).sort(key=lambda e: e["name"])
-    _save(data)
-    return _summary(entry)
+    with _conn() as con:
+        con.execute(
+            """
+            INSERT INTO libraries (name, path, tags, file_count, last_scanned)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                path         = excluded.path,
+                tags         = CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
+                file_count   = excluded.file_count,
+                last_scanned = excluded.last_scanned
+            """,
+            (name, str(folder), tag_str, len(indexed), now),
+        )
+        _write_files(con, name, indexed)
+        row = con.execute("SELECT * FROM libraries WHERE name = ?", (name,)).fetchone()
+        return _row_to_summary(row)
 
 
 def remove(name: str) -> dict[str, Any]:
-    data = _load()
-    entry = _require(data, name)
-    _entries(data).remove(entry)
-    _save(data)
+    with _conn() as con:
+        _require_library(con, name)
+        con.execute("DELETE FROM libraries WHERE name = ?", (name,))
     return {"removed": name}
 
 
-def _file_summary(library_name: str, f: dict[str, Any]) -> dict[str, Any]:
-    summary = {"ref": f"{library_name}/{f['path']}", "category": f["category"]}
-    if "bpm" in f:
-        summary["bpm"] = f["bpm"]
-        summary["bpm_source"] = f["bpm_source"]
-    return summary
-
-
-def _summary(entry: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": entry["name"],
-        "path": entry["path"],
-        "tags": list(entry.get("tags", [])),
-        "file_count": entry.get("file_count", 0),
-        "last_scanned": entry.get("last_scanned"),
-    }
-
-
 def list_entries() -> dict[str, Any]:
-    data = _load()
-    return {"libraries": [_summary(e) for e in _entries(data)]}
+    with _conn() as con:
+        rows = con.execute("SELECT * FROM libraries ORDER BY name").fetchall()
+        return {"libraries": [_row_to_summary(r) for r in rows]}
 
 
 def scan(name: str | None = None, *, analyze: bool = False) -> dict[str, Any]:
-    data = _load()
-    targets = [_require(data, name)] if name is not None else _entries(data)
-    if not targets:
-        raise BadInputError("no libraries registered")
+    with _conn() as con:
+        if name is not None:
+            targets = [_require_library(con, name)]
+        else:
+            targets = con.execute("SELECT * FROM libraries ORDER BY name").fetchall()
+            if not targets:
+                raise BadInputError("no libraries registered")
 
-    scanned = []
-    for entry in targets:
-        folder = Path(entry["path"])
-        if not folder.is_dir():
-            raise BadInputError(f"library '{entry['name']}' folder no longer exists: {entry['path']}")
-        indexed = _index_folder(folder, analyze=analyze)
-        entry["files"] = indexed
-        entry["file_count"] = len(indexed)
-        entry["last_scanned"] = time.time()
-        scanned.append(_summary(entry))
+        scanned = []
+        now = time.time()
+        for row in targets:
+            folder = Path(row["path"])
+            if not folder.is_dir():
+                raise BadInputError(
+                    f"library '{row['name']}' folder no longer exists: {row['path']}"
+                )
+            indexed = _index_folder(folder, analyze=analyze)
+            _write_files(con, row["name"], indexed)
+            con.execute(
+                "UPDATE libraries SET file_count = ?, last_scanned = ? WHERE name = ?",
+                (len(indexed), now, row["name"]),
+            )
+            scanned.append({**_row_to_summary(row), "file_count": len(indexed), "last_scanned": now})
 
-    _save(data)
-    return {"scanned": scanned}
+        return {"scanned": scanned}
 
 
 def show(name: str) -> dict[str, Any]:
-    data = _load()
-    entry = _require(data, name)
-
-    files = [_file_summary(name, f) for f in _cached_files(entry)]
-    return {**_summary(entry), "files": files}
+    with _conn() as con:
+        row = _require_library(con, name)
+        file_rows = con.execute(
+            "SELECT * FROM files WHERE library_name = ? ORDER BY rel_path", (name,)
+        ).fetchall()
+        files = [_file_row_to_summary(name, r) for r in file_rows]
+        return {**_row_to_summary(row), "files": files}
 
 
 BPM_TOLERANCE = 2.0
 
 
 def search(
-    query: str | None = None, *, library: str | None = None,
-    tag: str | None = None, category: str | None = None, bpm: float | None = None,
+    query: str | None = None, *,
+    library: str | None = None,
+    tag: str | None = None,
+    category: str | None = None,
+    bpm: float | None = None,
 ) -> dict[str, Any]:
-    data = _load()
-    entries = [_require(data, library)] if library is not None else _entries(data)
+    with _conn() as con:
+        if library is not None:
+            _require_library(con, library)
 
-    needle = query.lower() if query else None
-    matches = []
-    for entry in entries:
-        if tag is not None and tag not in entry.get("tags", []):
-            continue
-        for f in _cached_files(entry):
-            if category is not None and f["category"] != category:
-                continue
-            if bpm is not None and (f.get("bpm") is None or abs(f["bpm"] - bpm) > BPM_TOLERANCE):
-                continue
-            if needle is not None and needle not in Path(f["path"]).name.lower():
-                continue
-            matches.append({**_file_summary(entry["name"], f), "tags": list(entry.get("tags", []))})
+        clauses: list[str] = []
+        params: list[Any] = []
 
-    return {"query": query, "matches": matches, "count": len(matches)}
+        if library is not None:
+            clauses.append("f.library_name = ?")
+            params.append(library)
+
+        if tag is not None:
+            # tags stored as comma-separated string — match whole tag token
+            clauses.append(
+                "((',' || l.tags || ',') LIKE ?)"
+            )
+            params.append(f"%,{tag},%")
+
+        if category is not None:
+            clauses.append("f.category = ?")
+            params.append(category)
+
+        if bpm is not None:
+            clauses.append("f.bpm IS NOT NULL AND ABS(f.bpm - ?) <= ?")
+            params.extend([bpm, BPM_TOLERANCE])
+
+        if query is not None:
+            clauses.append("LOWER(f.rel_path) LIKE ?")
+            params.append(f"%{query.lower()}%")
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"""
+            SELECT f.library_name, f.rel_path, f.category, f.bpm, f.bpm_source,
+                   l.tags
+            FROM files f
+            JOIN libraries l ON l.name = f.library_name
+            {where}
+            ORDER BY f.library_name, f.rel_path
+        """
+        rows = con.execute(sql, params).fetchall()
+
+        matches = []
+        for r in rows:
+            m: dict[str, Any] = {
+                "ref": f"{r['library_name']}/{r['rel_path']}",
+                "category": r["category"],
+                "tags": [t for t in r["tags"].split(",") if t],
+            }
+            if r["bpm"] is not None:
+                m["bpm"] = r["bpm"]
+                m["bpm_source"] = r["bpm_source"]
+            matches.append(m)
+
+        return {"query": query, "matches": matches, "count": len(matches)}
 
 
 # ---------------------------------------------------------------------------
@@ -264,24 +335,23 @@ def search(
 def resolve_ref(ref: str) -> Path | None:
     """Resolve a ``<library-name>[/<relative-path>]`` reference to a real path.
 
-    Returns ``None`` (rather than raising) when ``ref`` doesn't name a
-    registered library, so callers can fall back to treating it as a literal
-    filesystem path — library refs and plain paths share the same option/arg.
+    Returns ``None`` when ``ref`` doesn't name a registered library, so callers
+    can fall back to treating it as a literal filesystem path.
     """
     name, _, rest = ref.partition("/")
-    data = _load()
-    entry = _find(data, name)
-    if entry is None:
+    with _conn() as con:
+        row = con.execute("SELECT path FROM libraries WHERE name = ?", (name,)).fetchone()
+    if row is None:
         return None
 
-    folder = Path(entry["path"])
+    folder = Path(row["path"])
     target = (folder / rest).resolve() if rest else folder
     try:
         target.relative_to(folder.resolve())
     except ValueError:
         raise BadInputError(f"'{ref}' escapes library '{name}'")
     if not target.exists():
-        raise NotFoundError(f"'{ref}' not found in library '{name}' ({entry['path']})")
+        raise NotFoundError(f"'{ref}' not found in library '{name}' ({row['path']})")
     return target
 
 
