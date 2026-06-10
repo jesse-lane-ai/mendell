@@ -1,0 +1,52 @@
+name: drop-machine
+description: "32-bar drop machine — full arrangement with strategic drops (hi-hats out, then kick+bass, then full breakdown)."
+bars: 32
+sections: 4
+section_bars: 8
+
+tracks:
+  drums:
+    type: midi
+    constant: true
+    clip: drum-loop
+    place: 1
+  kit:
+    type: sampler
+    one_shots: [kick, snare, hat, clap]
+  bass:
+    type: audio
+    constant: true
+    clip: bass-loop
+    warp: beats
+    place: 1
+  melody:
+    type: audio
+    warp: melodic
+    mutations:
+      - name: mel-full
+        bar: 1
+        pitch_offset: 0
+        process: null
+      - name: mel-drop-hats
+        bar: 9
+        pitch_offset: 0
+        process: null   # (automation would mute hats in real impl)
+      - name: mel-stripped
+        bar: 17
+        pitch_offset: 0
+        process: null
+      - name: mel-full-return
+        bar: 25
+        pitch_offset: 0
+        process: null
+
+arrangement:
+  length: 32
+  drops:
+    - track: kit
+      clip: hat
+      bars: [5, 13, 21]
+      action: mute
+    - track: bass
+      bars: [13, 21]
+      action: mute

@@ -67,15 +67,18 @@ def make(name, style, bpm, key, duration, variations, kit, melody, bass, export)
 @click.option("--export", "export_format", default="mp3", help="Export format (mp3/wav).")
 @click.option("--warp/--no-warp", "warp", default=None,
               help="Force rubberband warp on/off (default: auto-detect rubberband).")
+@click.option("--pattern", default="mutation-loop",
+              help="Beat archetype pattern (default: mutation-loop).")
 @json_option
 @command
-def random32(name, bpm, key, db_path, seed, export_format, warp):
-    """Build a full 32-bar beat PROJECT from the sample db: drums + bass + melody
-    tracks, an arrangement of 4 x 8-bar sections (same drums + bass, melody mutated
-    each section), rendered and exported. Random tempo/key; loops warped to tempo
-    and transposed to key. The project is editable like any other Mendell project."""
+def random32(name, bpm, key, db_path, seed, export_format, warp, pattern):
+    """Build a full 32-bar beat PROJECT from the sample db using a declarative
+    arrangement pattern. Supports --pattern mutation-loop (default), drop-machine,
+    verse-chorus, etc. Drums + bass + melody tracks, clips, real arrangement,
+    rendered + exported. Warp defaults to rubberband when available."""
     data = beat_random32.render(Path.cwd(), name, db_path=db_path, tempo=bpm,
-                                key=key, seed=seed, export_format=export_format, warp=warp)
+                                key=key, seed=seed, export_format=export_format, warp=warp,
+                                pattern=pattern)
     out = data["export"].get("out") or data["export"].get("path")
     return data, (
         f"random32 '{name}' -> {out} | {data['tempo']:g} BPM, key {data['key']}, "

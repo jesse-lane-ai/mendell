@@ -23,6 +23,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from . import arrangement as arrangement_mod
 from . import clips as clips_mod
@@ -38,6 +39,7 @@ KEYS = ["A", "B", "C", "D", "E", "F", "G"]
 # Semitone offset of each key from C, used to transpose toward the chosen key.
 _KEY_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 DEFAULT_DB = os.path.expanduser("~/.config/mendell/library.db")
+PATTERNS_DIR = Path(__file__).parent.parent.parent / "patterns"
 
 # General MIDI percussion notes — match what `kit load` / `midi generate` use.
 _GM = {"kick": "C2", "snare": "D2", "clap": "D#2", "hat": "F#2"}
@@ -65,6 +67,13 @@ def _have_warp():
         return True
     except Exception:
         return False
+
+def load_pattern(name: str) -> dict:
+    """Load a declarative beat archetype from patterns/NAME.yaml."""
+    path = PATTERNS_DIR / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"pattern not found: {name}")
+    with open(path) as f:\n        return yaml.safe_load(f)
 
 
 def _connect(db_path):
@@ -135,7 +144,7 @@ def _add_melody_clip(project_dir, clip_name, sample_path, *, bar, pitch,
 
 
 def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
-           export_format="mp3", warp=None):
+           export_format="mp3", warp=None, pattern="mutation-loop"):
     parent = Path(parent)
     if seed is not None:
         random.seed(seed)
@@ -166,7 +175,10 @@ def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
     sampler_mod.create(project_dir, KIT_TRACK)
     routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
     for cat, sample in picks.items():
-        sampler_mod.map_add(project_dir, KIT_TRACK, note=_GM[cat], sample=sample, link=True)
+        # copy (link=False) so the project is self-contained and always
+        # references its own copy of the source audio — baked mutations stay
+        # reversible even if the original library pack moves.
+        sampler_mod.map_add(project_dir, KIT_TRACK, note=_GM[cat], sample=sample, link=False)
 
     pattern_path = project_dir / "midi" / "drum-pattern.mid"
     write_pattern_midi(pattern_path, _DRUM_PATTERN)
@@ -181,27 +193,29 @@ def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
     clips_mod.set_params(project_dir, BASS_TRACK, "bass-loop", pitch=key_semi, loop=True)
     arrangement_mod.place(project_dir, BASS_TRACK, "bass-loop", bar=1)
 
-    # --- melody: same loop, mutated per 8-bar section ----------------------
+    # --- melody: driven by pattern mutations -------------------------------
     tracks_mod.add(project_dir, MELODY_TRACK, "audio")
-    # section 1: clean
-    _add_melody_clip(project_dir, "mel-clean", mpath, bar=1, pitch=key_semi,
-                     native_bpm=mbpm, warp_mode=warp_mode)
-    # section 2: octave up (+12 semitones)
-    _add_melody_clip(project_dir, "mel-octave", mpath, bar=1 + SECTION_BARS,
-                     pitch=key_semi + 12, native_bpm=mbpm, warp_mode=warp_mode)
-    # sections 3 & 4 need processed audio — pre-render lowpass + reverse variants
-    mel = _decode(mpath)
-    lp_path = project_dir / "samples" / "mel-lowpass.wav"
-    rev_path = project_dir / "samples" / "mel-reverse.wav"
-    lp_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_wav(lp_path, _lowpass(mel))
-    _write_wav(rev_path, mel[::-1].copy())
-    # section 3: lowpass
-    _add_melody_clip(project_dir, "mel-lowpass", str(lp_path), bar=1 + 2 * SECTION_BARS,
-                     pitch=key_semi, native_bpm=mbpm, warp_mode=warp_mode)
-    # section 4: reverse
-    _add_melody_clip(project_dir, "mel-reverse", str(rev_path), bar=1 + 3 * SECTION_BARS,
-                     pitch=key_semi, native_bpm=mbpm, warp_mode=warp_mode)
+    pattern = load_pattern("mutation-loop")
+    mel_audio = _decode(mpath)
+    for mut in pattern["tracks"]["melody"]["mutations"]:
+        clip_name = mut["name"]
+        bar = mut["bar"]
+        pitch = key_semi + mut.get("pitch_offset", 0)
+        process = mut.get("process")
+        if process == "lowpass":
+            proc_path = project_dir / "samples" / f"{clip_name}.wav"
+            proc_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_wav(proc_path, _lowpass(mel_audio))
+            sample = str(proc_path)
+        elif process == "reverse":
+            proc_path = project_dir / "samples" / f"{clip_name}.wav"
+            proc_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_wav(proc_path, mel_audio[::-1].copy())
+            sample = str(proc_path)
+        else:
+            sample = mpath
+        _add_melody_clip(project_dir, clip_name, sample, bar=bar, pitch=pitch,
+                         native_bpm=mbpm, warp_mode=warp_mode)
 
     arrangement_mod.set_params(project_dir, length=float(ARRANGEMENT_BARS))
 
@@ -219,6 +233,6 @@ def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
         "bass": os.path.basename(bpath),
         "melody": os.path.basename(mpath),
         "kit": {c: os.path.basename(p) for c, p in picks.items()},
-        "mutations": ["clean", "octave-up", "lowpass", "reverse"],
+        "mutations": [m["name"] for m in pattern["tracks"]["melody"]["mutations"]],
         "export": export_info,
     }

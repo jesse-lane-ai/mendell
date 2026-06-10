@@ -1,0 +1,44 @@
+name: verse-chorus
+description: "Classic verse-chorus form (8+8+8+8) with contrast between sections."
+bars: 32
+sections: 4
+section_bars: 8
+
+tracks:
+  drums:
+    type: midi
+    constant: false   # different patterns per section in full impl
+    clip: drum-loop
+    place: 1
+  kit:
+    type: sampler
+    one_shots: [kick, snare, hat, clap]
+  bass:
+    type: audio
+    constant: true
+    clip: bass-loop
+    warp: beats
+    place: 1
+  melody:
+    type: audio
+    warp: melodic
+    mutations:
+      - name: verse-a
+        bar: 1
+        pitch_offset: 0
+        process: null
+      - name: chorus
+        bar: 9
+        pitch_offset: 0
+        process: null
+      - name: verse-b
+        bar: 17
+        pitch_offset: 0
+        process: null
+      - name: final-chorus
+        bar: 25
+        pitch_offset: 5
+        process: null
+
+arrangement:
+  length: 32
