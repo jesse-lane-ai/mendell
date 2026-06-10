@@ -98,6 +98,66 @@ mendell beat make NAME \
 
 The `export.path` field is guaranteed to point at a real, non-empty file.
 
+## `mendell beat random32` — Instant Beat From the Sample Library
+
+One command, no project scaffolding: renders a 32-bar arrangement straight to a
+WAV by pulling samples from the registered `library.db`. Use this when the goal
+is "give me a beat from my packs" rather than an editable project.
+
+```bash
+mendell beat random32 \
+  --out random32.wav \   # output WAV (default: random32.wav)
+  --bpm FLOAT \          # tempo (default: random 70-160)
+  --key A-G \            # key (default: random A-G)
+  --db PATH \            # library.db (default: ~/.config/mendell/library.db)
+  --seed INT \           # deterministic sample picks
+  --warp / --no-warp \   # force warp engine (default: auto-detect rubberband)
+  --json
+```
+
+### Arrangement (the "napkin" pattern)
+
+Four 8-bar sections = 32 bars. **Drums and bass stay constant** across all four;
+the **melody is the same loop mutated each section**:
+
+| Section | 1     | 2         | 3        | 4        |
+|---------|-------|-----------|----------|----------|
+| Melody  | clean | octave-up | lowpass  | reverse  |
+| Bass    | same  | same      | same     | same     |
+| Drums   | same  | same      | same     | same     |
+
+### What it does internally
+
+1. Picks kick/snare/hat/clap (one-shots) + bass + melody from `library.db`,
+   preferring loops near the target tempo; random pick (deterministic under `--seed`).
+2. Random tempo (70–160) and key (A–G) unless pinned.
+3. Stretches each loop to tempo; transposes bass + melody to key.
+4. Sequences a fixed 4-on-the-floor-ish drum grid + tiled bass + per-section
+   mutated melody, normalizes, soft-clips, writes WAV.
+
+### Warp engine
+
+Defaults to **rubberband** (`rubberband` CLI + `pyrubberband`) for independent
+tempo/pitch — octave-up is a clean +12 semitones, key transpose doesn't skew
+timing. Falls back to coupled resample when rubberband is missing. `--warp` /
+`--no-warp` force it. Reports `"engine": "rubberband" | "resample"`. Warp render
+is slower (~15s) than resample (near-instant).
+
+### Output envelope (--json)
+
+```json
+{
+  "out": "/path/to/random32.wav",
+  "engine": "rubberband",
+  "tempo": 96.0, "key": "F", "bars": 32, "sections": 4,
+  "duration_sec": 80.0,
+  "bass": "95_Gbm_SlapSquare_01_SP.wav",
+  "melody": "FAITHONTEN 90 BPM.wav",
+  "kit": { "kick": "...", "snare": "...", "hat": "...", "clap": "..." },
+  "mutations": ["clean", "octave-up", "lowpass", "reverse"]
+}
+```
+
 ## Condensed Agent Prompt (use this instead of long task descriptions)
 
 ```

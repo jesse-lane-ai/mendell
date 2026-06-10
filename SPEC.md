@@ -183,7 +183,24 @@ mendell kit load <project> <track> <folder> [--start-note C5] [--json]
 # in one shot — uses the same General MIDI percussion notes as `beat new` /
 # `kit load`, so it composes with both. Loops by default (--no-loop to disable).
 mendell midi generate <project> <track> <clip-name> --style boom-bap|lofi|trap [--bars 1] [--no-loop] [--json]
+
+# Render a complete 32-bar beat straight from the sample library to a WAV —
+# no project scaffolding. Four 8-bar sections: drums + bass held constant, the
+# melody mutated each section (clean -> octave-up -> lowpass -> reverse). Picks
+# kick/snare/hat/clap/bass/melody from the registered library.db, with a random
+# tempo (70-160) and key (A-G) unless pinned. Loops are stretched to tempo and
+# bass + melody transposed to key.
+mendell beat random32 [--out random32.wav] [--bpm N] [--key A-G] [--db PATH]
+                      [--seed N] [--warp/--no-warp] [--json]
 ```
+
+`beat random32` uses the **rubberband** warp engine (`rubberband` CLI +
+`pyrubberband`) by default when available, for independent time-stretch and
+pitch-shift — so the octave-up mutation is a clean +12 semitones and key
+transposition doesn't skew timing. When rubberband is absent it falls back to a
+coupled resample (speed and pitch move together). `--warp`/`--no-warp` force the
+choice; the result reports `"engine": "rubberband" | "resample"`. Sample picks
+are deterministic under `--seed`.
 
 `beat new` writes its starter pattern using the same General MIDI percussion notes
 (kick=C2, snare=D2, clap=D#2, closed hat=F#2, open hat=A#2, ...) that `kit load`

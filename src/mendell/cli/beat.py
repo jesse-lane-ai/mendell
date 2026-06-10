@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 
 from .. import beat as beat_mod
+from .. import beat_random32
 from ._base import command, json_option
 
 
@@ -53,4 +54,29 @@ def make(name, style, bpm, key, duration, variations, kit, melody, bass, export)
     return data, (
         f"made '{name}' ({style}) — {data['sections']} sections / "
         f"{data['variations']} variations @ {data['bpm']:g} BPM -> {out}"
+    )
+
+
+@beat.command("random32")
+@click.option("--out", "out_path", default="random32.wav", type=click.Path(),
+              help="Output WAV path.")
+@click.option("--bpm", type=float, help="Tempo (default: random 70-160).")
+@click.option("--key", type=click.Choice(beat_random32.KEYS), help="Key (default: random A-G).")
+@click.option("--db", "db_path", default=beat_random32.DEFAULT_DB, type=click.Path(),
+              help="Sample library.db path.")
+@click.option("--seed", type=int, help="Random seed for reproducible picks.")
+@click.option("--warp/--no-warp", "warp", default=None,
+              help="Force rubberband warp on/off (default: auto-detect rubberband).")
+@json_option
+@command
+def random32(out_path, bpm, key, db_path, seed, warp):
+    """Build a 32-bar beat from the sample db: 4 x 8-bar sections, same drums +
+    bass, melody mutated each section. Random tempo/key, loops stretched to tempo.
+    Uses the rubberband warp engine for clean pitch/tempo when available."""
+    data = beat_random32.render(out_path, db_path=db_path, tempo=bpm, key=key,
+                                seed=seed, warp=warp)
+    return data, (
+        f"random32 -> {data['out']} | {data['tempo']:g} BPM, key {data['key']}, "
+        f"{data['duration_sec']:g}s | {data['engine']} | "
+        f"bass {data['bass']} | mel {data['melody']}"
     )
