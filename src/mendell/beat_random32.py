@@ -1,16 +1,17 @@
-"""32-bar beat from the sample library — the 'napkin' arrangement.
+"""`mendell beat random32` — build a full 32-bar Mendell project from the library.
+
+Creates a real, editable project (drums + bass + melody tracks, clips, an
+arrangement, and an exported mix) rather than a flat rendered WAV — so the
+result can be re-mixed, re-arranged, and tweaked like any other Mendell project.
 
 Layout (4 sections x 8 bars = 32 bars):
-    | 8     | 8     | 8     | 8     |
-    Melody  Melody  Melody  Melody   <- same melody, mutated each section (pitch/fx)
-    Bass    Bass    Bass    Bass     <- stays the same
-    Drums   Drums   Drums   Drums    <- stays the same
+    | 8     | 8         | 8        | 8        |
+    Melody  clean       octave-up  lowpass    reverse   <- same loop, mutated
+    Bass    same loop across all sections
+    Drums   same one-shot pattern across all sections
 
-Rules:
-  * Pull loops/one-shots from the registered library.db.
-  * Random tempo 70-160 BPM and random key (A-G).
-  * Time-stretch selected loops to tempo (cheap resample).
-  * Transpose bass + melody to the selected key; mutate melody every 8 bars.
+The four melody clips live on one track, placed at bars 1/9/17/25; the engine
+loops each until the next placement, so each 8-bar section gets its own mutation.
 """
 
 import os
@@ -23,7 +24,36 @@ from pathlib import Path
 
 import numpy as np
 
+from . import arrangement as arrangement_mod
+from . import clips as clips_mod
+from . import engine as engine_mod
+from . import project as project_mod
+from . import routing as routing_mod
+from . import sampler as sampler_mod
+from . import tracks as tracks_mod
+from .midi_gen import write_pattern_midi
+
 SR = 44100
+KEYS = ["A", "B", "C", "D", "E", "F", "G"]
+# Semitone offset of each key from C, used to transpose toward the chosen key.
+_KEY_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+DEFAULT_DB = os.path.expanduser("~/.config/mendell/library.db")
+
+# General MIDI percussion notes — match what `kit load` / `midi generate` use.
+_GM = {"kick": "C2", "snare": "D2", "clap": "D#2", "hat": "F#2"}
+_GM_NUM = {"kick": 36, "snare": 38, "clap": 39, "hat": 42}
+
+DRUM_TRACK, KIT_TRACK, BASS_TRACK, MELODY_TRACK = "drums", "kit", "bass", "melody"
+ARRANGEMENT_BARS = 32
+SECTION_BARS = 8
+
+# One constant 4/4 drum bar (beat_offset, note, velocity, length_beats); loops.
+_DRUM_PATTERN = [
+    (0.0, _GM_NUM["kick"], 112, 0.5), (2.0, _GM_NUM["kick"], 104, 0.5),
+    (1.0, _GM_NUM["snare"], 100, 0.5), (3.0, _GM_NUM["snare"], 100, 0.5),
+    (1.0, _GM_NUM["clap"], 78, 0.5), (3.0, _GM_NUM["clap"], 78, 0.5),
+    *[(i * 0.5, _GM_NUM["hat"], 58 if i % 2 else 68, 0.25) for i in range(8)],
+]
 
 
 def _have_warp():
@@ -35,10 +65,6 @@ def _have_warp():
         return True
     except Exception:
         return False
-KEYS = ["A", "B", "C", "D", "E", "F", "G"]
-# Semitone offset of each key from C, used to transpose toward the chosen key.
-_KEY_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
-DEFAULT_DB = os.path.expanduser("~/.config/mendell/library.db")
 
 
 def _connect(db_path):
@@ -76,42 +102,6 @@ def _decode(path):
     return np.frombuffer(p.stdout, dtype=np.float32).reshape(-1, 2).copy()
 
 
-def _resample(src, ratio):
-    """Speed up/slow down by `ratio` (>1 = faster/higher) via index resample."""
-    if ratio == 1.0 or len(src) == 0:
-        return src
-    idx = (np.arange(int(len(src) / ratio)) * ratio).astype(int)
-    idx = idx[idx < len(src)]
-    return src[idx]
-
-
-def _tile(src, length):
-    if len(src) == 0:
-        return np.zeros((length, 2), np.float32)
-    return np.tile(src, (length // len(src) + 1, 1))[:length]
-
-
-def _prep(src, stretch_ratio, semitones, use_warp):
-    """Time-stretch (toward target tempo) and pitch-shift one loop.
-
-    Warp path uses rubberband for independent tempo/pitch; the fallback resamples
-    (tempo and pitch are coupled). `stretch_ratio` = target_bpm / native_bpm.
-    """
-    if len(src) == 0:
-        return src
-    if use_warp:
-        import pyrubberband as prb
-        out = src
-        if stretch_ratio != 1.0:
-            out = prb.time_stretch(out, SR, stretch_ratio)
-        if semitones:
-            out = prb.pitch_shift(out, SR, semitones)
-        return np.ascontiguousarray(out, dtype=np.float32)
-    # fallback: resample couples speed + pitch
-    ratio = stretch_ratio * (2 ** (semitones / 12.0))
-    return _resample(src, ratio)
-
-
 def _lowpass(x, a=0.16):
     y = np.copy(x)
     for c in range(2):
@@ -124,7 +114,29 @@ def _lowpass(x, a=0.16):
     return y
 
 
-def render(out_path, db_path=DEFAULT_DB, tempo=None, key=None, seed=None, warp=None):
+def _write_wav(path, audio):
+    audio = np.clip(audio, -1.0, 1.0)
+    w = wave.open(str(path), "w")
+    w.setnchannels(2)
+    w.setsampwidth(2)
+    w.setframerate(SR)
+    w.writeframes((audio * 32767).astype(np.int16).tobytes())
+    w.close()
+
+
+def _add_melody_clip(project_dir, clip_name, sample_path, *, bar, pitch,
+                     native_bpm, warp_mode):
+    """Import a melody sample as a looping clip placed at `bar` with `pitch`."""
+    clips_mod.import_clip(project_dir, MELODY_TRACK, clip_name,
+                          sample_path=sample_path,
+                          native_bpm=native_bpm, warp=warp_mode)
+    clips_mod.set_params(project_dir, MELODY_TRACK, clip_name, pitch=pitch, loop=True)
+    arrangement_mod.place(project_dir, MELODY_TRACK, clip_name, bar=bar)
+
+
+def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
+           export_format="mp3", warp=None):
+    parent = Path(parent)
     if seed is not None:
         random.seed(seed)
     tempo = float(tempo) if tempo else float(random.randint(70, 160))
@@ -132,94 +144,81 @@ def render(out_path, db_path=DEFAULT_DB, tempo=None, key=None, seed=None, warp=N
     if key not in _KEY_SEMITONE:
         raise ValueError(f"key must be one of {KEYS}")
     use_warp = _have_warp() if warp is None else bool(warp)
-
-    con = _connect(db_path)
-
-    beat = 60.0 / tempo
-    spb = int(round(beat * 4 * SR))          # samples per bar (4/4)
-    sec = spb * 8                            # samples per 8-bar section
-    total = sec * 4
-    step = int(round(beat * SR / 4))         # 16th-note step
-    mix = np.zeros((total, 2), np.float32)
-
-    def place(src, at, g=1.0):
-        n = min(len(src), len(mix) - at)
-        if n > 0:
-            mix[at:at + n] += src[:n] * g
-
-    # --- one-shot drum kit, same across all sections -----------------------
-    kpath, spath, hpath, cpath = (_pick(con, "kick")[0], _pick(con, "snare")[0],
-                                  _pick(con, "hat")[0], _pick(con, "clap")[0])
-    kick, snare, hat, clap = _decode(kpath), _decode(spath), _decode(hpath), _decode(cpath)
-
-    def drums(off):
-        for b in range(8):
-            bo = off + b * spb
-            for bt in range(4):
-                t = bo + bt * int(round(beat * SR))
-                if bt in (0, 2):
-                    place(kick, t, 0.95)
-                if bt in (1, 3):
-                    place(snare, t, 0.8)
-                    place(clap, t, 0.45)
-            for s in range(16):
-                place(hat, bo + s * step, 0.3 if s % 2 else 0.45)
-
+    warp_mode = "melodic" if use_warp else None
+    bass_warp = "beats" if use_warp else None
     # nearest transpose to the chosen key, kept within +/-6 semitones
     key_semi = ((_KEY_SEMITONE[key] + 6) % 12) - 6
 
-    # --- bass: same loop every section, stretched to tempo + to key --------
-    bpath = _pick(con, "bass", bpm=tempo)[0]
-    bratio = (tempo / _bpm_of(con, bpath)) if _bpm_of(con, bpath) else 1.0
-    bass_seg = _tile(_prep(_decode(bpath), bratio, key_semi, use_warp), sec)
+    con = _connect(db_path)
 
-    # --- melody: same loop, mutated every 8 bars ---------------------------
+    # --- pick samples ------------------------------------------------------
+    picks = {c: _pick(con, c)[0] for c in ("kick", "snare", "hat", "clap")}
+    bpath = _pick(con, "bass", bpm=tempo)[0]
     mpath = (_pick(con, "melody", bpm=tempo) or _pick(con, "loop", bpm=tempo)
              or _pick(con, "melody"))[0]
-    mratio = (tempo / _bpm_of(con, mpath)) if _bpm_of(con, mpath) else 1.0
-    mel_native = _decode(mpath)
+    bbpm = _bpm_of(con, bpath)
+    mbpm = _bpm_of(con, mpath)
 
-    mutations = ["clean", "octave-up", "lowpass", "reverse"]
-    for s in range(4):
-        off = s * sec
-        drums(off)
-        place(bass_seg, off, 0.5)
-        mut = mutations[s]
-        # +12 semitones for the octave (clean pitch under warp; speed under resample)
-        msemi = key_semi + (12 if mut == "octave-up" else 0)
-        mseg = _tile(_prep(mel_native, mratio, msemi, use_warp), sec)
-        if mut == "lowpass":
-            mseg = _lowpass(mseg)
-        elif mut == "reverse":
-            mseg = mseg[::-1].copy()
-        place(mseg, off, 0.5)
+    # --- project + drums (midi -> sampler kit) -----------------------------
+    project_dir = project_mod.create(parent, name, bpm=tempo, key=key, scale="minor")
+    tracks_mod.add(project_dir, DRUM_TRACK, "midi")
+    tracks_mod.add(project_dir, KIT_TRACK, "sampler")
+    sampler_mod.create(project_dir, KIT_TRACK)
+    routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
+    for cat, sample in picks.items():
+        sampler_mod.map_add(project_dir, KIT_TRACK, note=_GM[cat], sample=sample, link=True)
 
-    # --- master: normalize + soft clip -------------------------------------
-    peak = np.max(np.abs(mix))
-    if peak > 0:
-        mix *= 0.97 / peak
-    mix = np.tanh(mix * 1.2) * 0.9
+    pattern_path = project_dir / "midi" / "drum-pattern.mid"
+    write_pattern_midi(pattern_path, _DRUM_PATTERN)
+    clips_mod.import_clip(project_dir, DRUM_TRACK, "drum-loop", midi_path=str(pattern_path))
+    clips_mod.set_params(project_dir, DRUM_TRACK, "drum-loop", loop=True)
+    arrangement_mod.place(project_dir, DRUM_TRACK, "drum-loop", bar=1)
 
-    out_path = str(Path(out_path).expanduser())
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    w = wave.open(out_path, "w")
-    w.setnchannels(2)
-    w.setsampwidth(2)
-    w.setframerate(SR)
-    w.writeframes((mix * 32767).astype(np.int16).tobytes())
-    w.close()
+    # --- bass: one looped loop across all 32 bars, transposed to key -------
+    tracks_mod.add(project_dir, BASS_TRACK, "audio")
+    clips_mod.import_clip(project_dir, BASS_TRACK, "bass-loop",
+                          sample_path=bpath, native_bpm=bbpm, warp=bass_warp)
+    clips_mod.set_params(project_dir, BASS_TRACK, "bass-loop", pitch=key_semi, loop=True)
+    arrangement_mod.place(project_dir, BASS_TRACK, "bass-loop", bar=1)
+
+    # --- melody: same loop, mutated per 8-bar section ----------------------
+    tracks_mod.add(project_dir, MELODY_TRACK, "audio")
+    # section 1: clean
+    _add_melody_clip(project_dir, "mel-clean", mpath, bar=1, pitch=key_semi,
+                     native_bpm=mbpm, warp_mode=warp_mode)
+    # section 2: octave up (+12 semitones)
+    _add_melody_clip(project_dir, "mel-octave", mpath, bar=1 + SECTION_BARS,
+                     pitch=key_semi + 12, native_bpm=mbpm, warp_mode=warp_mode)
+    # sections 3 & 4 need processed audio — pre-render lowpass + reverse variants
+    mel = _decode(mpath)
+    lp_path = project_dir / "samples" / "mel-lowpass.wav"
+    rev_path = project_dir / "samples" / "mel-reverse.wav"
+    lp_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_wav(lp_path, _lowpass(mel))
+    _write_wav(rev_path, mel[::-1].copy())
+    # section 3: lowpass
+    _add_melody_clip(project_dir, "mel-lowpass", str(lp_path), bar=1 + 2 * SECTION_BARS,
+                     pitch=key_semi, native_bpm=mbpm, warp_mode=warp_mode)
+    # section 4: reverse
+    _add_melody_clip(project_dir, "mel-reverse", str(rev_path), bar=1 + 3 * SECTION_BARS,
+                     pitch=key_semi, native_bpm=mbpm, warp_mode=warp_mode)
+
+    arrangement_mod.set_params(project_dir, length=float(ARRANGEMENT_BARS))
+
+    # --- render / export ---------------------------------------------------
+    export_info = engine_mod.export(project_dir, format=export_format)
 
     return {
-        "out": out_path,
-        "engine": "rubberband" if use_warp else "resample",
+        "project": project_mod.info(project_dir),
+        "engine": "rubberband" if use_warp else "none",
         "tempo": tempo,
         "key": key,
-        "bars": 32,
+        "bars": ARRANGEMENT_BARS,
         "sections": 4,
-        "duration_sec": round(total / SR, 2),
+        "tracks": [DRUM_TRACK, KIT_TRACK, BASS_TRACK, MELODY_TRACK],
         "bass": os.path.basename(bpath),
         "melody": os.path.basename(mpath),
-        "kit": {k: os.path.basename(v) for k, v in
-                (("kick", kpath), ("snare", spath), ("hat", hpath), ("clap", cpath))},
-        "mutations": mutations,
+        "kit": {c: os.path.basename(p) for c, p in picks.items()},
+        "mutations": ["clean", "octave-up", "lowpass", "reverse"],
+        "export": export_info,
     }

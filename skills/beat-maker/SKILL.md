@@ -98,22 +98,29 @@ mendell beat make NAME \
 
 The `export.path` field is guaranteed to point at a real, non-empty file.
 
-## `mendell beat random32` — Instant Beat From the Sample Library
+## `mendell beat random32` — Full Beat Project From the Sample Library
 
-One command, no project scaffolding: renders a 32-bar arrangement straight to a
-WAV by pulling samples from the registered `library.db`. Use this when the goal
-is "give me a beat from my packs" rather than an editable project.
+One command builds a complete, **editable project** (drums + bass + melody
+tracks, clips, a 32-bar arrangement) from the registered `library.db`, then
+renders and exports it. Use this when the goal is "give me a beat from my packs"
+that you can still tweak afterwards — unlike `beat make`, no loops/paths to pass.
 
 ```bash
-mendell beat random32 \
-  --out random32.wav \   # output WAV (default: random32.wav)
+mendell beat random32 NAME \   # project created under ./NAME/
   --bpm FLOAT \          # tempo (default: random 70-160)
   --key A-G \            # key (default: random A-G)
   --db PATH \            # library.db (default: ~/.config/mendell/library.db)
   --seed INT \           # deterministic sample picks
+  --export mp3|wav \     # export format (default: mp3)
   --warp / --no-warp \   # force warp engine (default: auto-detect rubberband)
   --json
 ```
+
+The project is a normal Mendell project: re-mix, re-arrange, swap clips, or add
+automation, then `mendell export NAME` again. The four melody mutations are four
+clips on one melody track at bars 1/9/17/25 (engine loops each until the next
+placement); octave-up is the base clip at `pitch +12`, lowpass/reverse are
+pre-rendered sample variants in the project's `samples/`.
 
 ### Arrangement (the "napkin" pattern)
 
@@ -130,31 +137,34 @@ the **melody is the same loop mutated each section**:
 
 1. Picks kick/snare/hat/clap (one-shots) + bass + melody from `library.db`,
    preferring loops near the target tempo; random pick (deterministic under `--seed`).
-2. Random tempo (70–160) and key (A–G) unless pinned.
-3. Stretches each loop to tempo; transposes bass + melody to key.
-4. Sequences a fixed 4-on-the-floor-ish drum grid + tiled bass + per-section
-   mutated melody, normalizes, soft-clips, writes WAV.
+2. Random tempo (70–160) and key (A–G) unless pinned; project scale = minor.
+3. Creates the project: `drums`(midi) → `kit`(sampler, one-shots mapped to GM
+   notes) + routing, `bass`(audio), `melody`(audio).
+4. Writes a constant drum MIDI loop; places the bass loop (warped + transposed)
+   across all 32 bars; places 4 per-section melody clips with mutations.
+5. Sets the arrangement to 32 bars and exports via the real engine.
 
 ### Warp engine
 
 Defaults to **rubberband** (`rubberband` CLI + `pyrubberband`) for independent
-tempo/pitch — octave-up is a clean +12 semitones, key transpose doesn't skew
-timing. Falls back to coupled resample when rubberband is missing. `--warp` /
-`--no-warp` force it. Reports `"engine": "rubberband" | "resample"`. Warp render
-is slower (~15s) than resample (near-instant).
+tempo/pitch on warped clips — octave-up is a clean +12 semitones, key transpose
+doesn't skew timing. When rubberband is missing, clips play unwarped (native
+tempo). `--warp` / `--no-warp` force it. Reports `"engine": "rubberband" | "none"`.
+Warp export is slower (~15–20s) than the unwarped path.
 
 ### Output envelope (--json)
 
 ```json
 {
-  "out": "/path/to/random32.wav",
+  "project": { ... },
   "engine": "rubberband",
   "tempo": 96.0, "key": "F", "bars": 32, "sections": 4,
-  "duration_sec": 80.0,
+  "tracks": ["drums", "kit", "bass", "melody"],
   "bass": "95_Gbm_SlapSquare_01_SP.wav",
   "melody": "FAITHONTEN 90 BPM.wav",
   "kit": { "kick": "...", "snare": "...", "hat": "...", "clap": "..." },
-  "mutations": ["clean", "octave-up", "lowpass", "reverse"]
+  "mutations": ["clean", "octave-up", "lowpass", "reverse"],
+  "export": { "out": "/path/to/NAME/export/NAME.mp3", ... }
 }
 ```
 

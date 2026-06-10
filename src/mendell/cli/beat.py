@@ -58,25 +58,26 @@ def make(name, style, bpm, key, duration, variations, kit, melody, bass, export)
 
 
 @beat.command("random32")
-@click.option("--out", "out_path", default="random32.wav", type=click.Path(),
-              help="Output WAV path.")
+@click.argument("name")
 @click.option("--bpm", type=float, help="Tempo (default: random 70-160).")
 @click.option("--key", type=click.Choice(beat_random32.KEYS), help="Key (default: random A-G).")
 @click.option("--db", "db_path", default=beat_random32.DEFAULT_DB, type=click.Path(),
               help="Sample library.db path.")
 @click.option("--seed", type=int, help="Random seed for reproducible picks.")
+@click.option("--export", "export_format", default="mp3", help="Export format (mp3/wav).")
 @click.option("--warp/--no-warp", "warp", default=None,
               help="Force rubberband warp on/off (default: auto-detect rubberband).")
 @json_option
 @command
-def random32(out_path, bpm, key, db_path, seed, warp):
-    """Build a 32-bar beat from the sample db: 4 x 8-bar sections, same drums +
-    bass, melody mutated each section. Random tempo/key, loops stretched to tempo.
-    Uses the rubberband warp engine for clean pitch/tempo when available."""
-    data = beat_random32.render(out_path, db_path=db_path, tempo=bpm, key=key,
-                                seed=seed, warp=warp)
+def random32(name, bpm, key, db_path, seed, export_format, warp):
+    """Build a full 32-bar beat PROJECT from the sample db: drums + bass + melody
+    tracks, an arrangement of 4 x 8-bar sections (same drums + bass, melody mutated
+    each section), rendered and exported. Random tempo/key; loops warped to tempo
+    and transposed to key. The project is editable like any other Mendell project."""
+    data = beat_random32.render(Path.cwd(), name, db_path=db_path, tempo=bpm,
+                                key=key, seed=seed, export_format=export_format, warp=warp)
+    out = data["export"].get("out") or data["export"].get("path")
     return data, (
-        f"random32 -> {data['out']} | {data['tempo']:g} BPM, key {data['key']}, "
-        f"{data['duration_sec']:g}s | {data['engine']} | "
-        f"bass {data['bass']} | mel {data['melody']}"
+        f"random32 '{name}' -> {out} | {data['tempo']:g} BPM, key {data['key']}, "
+        f"32 bars | {data['engine']} | bass {data['bass']} | mel {data['melody']}"
     )

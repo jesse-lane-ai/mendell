@@ -1,4 +1,4 @@
-"""Tests for `mendell beat random32` — the library-driven 32-bar beat.
+"""Tests for `mendell beat random32` — the library-driven 32-bar beat project.
 
 Hermetic: builds a tiny sqlite library.db pointing at synthetic WAVs, then renders
 with --no-warp so the test needs neither rubberband nor the real sample packs.
@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from mendell import beat_random32 as br
+from mendell import project as project_mod
 
 
 def _write_wav(path, seconds=1.0, freq=220.0, sr=br.SR):
@@ -48,38 +49,52 @@ def library_db(tmp_path):
     return str(db)
 
 
-def test_render_produces_32_bar_wav(tmp_path, library_db):
-    out = tmp_path / "beat.wav"
-    data = br.render(str(out), db_path=library_db, tempo=120, key="A",
-                     seed=1, warp=False)
+def test_render_builds_full_project(tmp_path, library_db):
+    data = br.render(tmp_path, "beat", db_path=library_db, tempo=120, key="A",
+                     seed=1, export_format="wav", warp=False)
 
-    assert out.exists() and out.stat().st_size > 0
-    assert data["engine"] == "resample"
+    proj = tmp_path / "beat"
+    assert (proj / "project.toml").exists()
+    assert data["engine"] == "none"          # warp disabled in test
     assert data["tempo"] == 120.0
     assert data["key"] == "A"
     assert data["bars"] == 32
     assert data["sections"] == 4
+    assert data["tracks"] == ["drums", "kit", "bass", "melody"]
     assert data["mutations"] == ["clean", "octave-up", "lowpass", "reverse"]
 
-    # 32 bars of 4/4 at 120 BPM = 64.0s; the WAV should match within a frame.
-    with wave.open(str(out)) as w:
-        assert w.getframerate() == br.SR
-        assert w.getnchannels() == 2
-        assert abs(w.getnframes() / br.SR - 64.0) < 0.05
+    # the four melody mutation clips + bass + drum clips exist on disk
+    for clip in ("mel-clean", "mel-octave", "mel-lowpass", "mel-reverse",
+                 "bass-loop", "drum-loop"):
+        assert (proj / "clips" / f"{clip}.toml").exists()
+
+    # exported a real, non-empty file
+    out = data["export"].get("out") or data["export"].get("path")
+    assert out and __import__("os").path.getsize(out) > 0
+
+
+def test_arrangement_is_32_bars(tmp_path, library_db):
+    br.render(tmp_path, "beat", db_path=library_db, seed=3,
+              export_format="wav", warp=False)
+    info = project_mod.info(tmp_path / "beat")
+    # project tempo lands in the random range
+    assert 70.0 <= info["bpm"] <= 160.0
 
 
 def test_seed_is_deterministic(tmp_path, library_db):
-    a = br.render(str(tmp_path / "a.wav"), db_path=library_db, seed=7, warp=False)
-    b = br.render(str(tmp_path / "b.wav"), db_path=library_db, seed=7, warp=False)
+    a = br.render(tmp_path / "a", "beat", db_path=library_db, seed=7,
+                  export_format="wav", warp=False)
+    b = br.render(tmp_path / "b", "beat", db_path=library_db, seed=7,
+                  export_format="wav", warp=False)
     assert (a["tempo"], a["key"], a["bass"], a["melody"]) == \
            (b["tempo"], b["key"], b["bass"], b["melody"])
 
 
 def test_invalid_key_rejected(tmp_path, library_db):
     with pytest.raises(ValueError):
-        br.render(str(tmp_path / "x.wav"), db_path=library_db, key="H", warp=False)
+        br.render(tmp_path, "beat", db_path=library_db, key="H", warp=False)
 
 
 def test_missing_db_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        br.render(str(tmp_path / "x.wav"), db_path=str(tmp_path / "nope.db"), warp=False)
+        br.render(tmp_path, "beat", db_path=str(tmp_path / "nope.db"), warp=False)

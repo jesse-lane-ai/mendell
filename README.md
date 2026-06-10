@@ -87,23 +87,25 @@ No drum loops handy? Generate a pattern straight onto a track:
 mendell midi generate my-song drums fill --style trap --bars 2 --json
 ```
 
-Want a whole beat straight out of your sample library, no project to wire up?
-`beat random32` renders a 32-bar arrangement (four 8-bar sections — drums and
-bass held constant, the melody mutated each section: clean → octave-up →
-lowpass → reverse) by pulling kick/snare/hat/clap/bass/melody from the
-registered `library.db`. It picks a random tempo (70–160) and key (A–G),
-stretches every loop to tempo, and transposes bass + melody to key:
+Want a whole beat straight out of your sample library? `beat random32` builds a
+complete, **editable project** — drums + bass + melody tracks, clips, and a
+32-bar arrangement (four 8-bar sections: drums and bass held constant, the melody
+mutated each section: clean → octave-up → lowpass → reverse) — then renders and
+exports it. It pulls kick/snare/hat/clap/bass/melody from the registered
+`library.db`, picks a random tempo (70–160) and key (A–G), warps every loop to
+tempo, and transposes bass + melody to key:
 
 ```bash
-mendell beat random32                              # all random, straight to random32.wav
-mendell beat random32 --bpm 120 --key A --out x.wav
-mendell beat random32 --seed 909 --json            # reproducible picks + JSON envelope
+mendell beat random32 my-beat                       # all random -> my-beat/ project + export
+mendell beat random32 my-beat --bpm 120 --key A
+mendell beat random32 my-beat --seed 909 --export wav --json
 ```
 
-When the `rubberband` CLI (+ `pyrubberband`) is installed it's used by default
-for clean, independent tempo/pitch warping; otherwise it falls back to a coupled
-resample. Force either path with `--warp` / `--no-warp`. The result reports
-which engine ran (`"engine": "rubberband" | "resample"`).
+Because it's a real project, you can keep working on it afterwards — re-mix,
+move sections, swap a loop, add automation — then `mendell export` again. When
+the `rubberband` CLI (+ `pyrubberband`) is installed it's used by default for
+clean, independent tempo/pitch warping; otherwise clips play unwarped. Force
+with `--warp` / `--no-warp`; the result reports `"engine": "rubberband" | "none"`.
 
 And before committing to a long render, check the plan first — duration, which
 tracks are active, FX chains, and any missing-file/missing-`rubberband` problems
