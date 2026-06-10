@@ -68,19 +68,22 @@ def make(name, style, bpm, key, duration, variations, kit, melody, bass, export)
 @click.option("--warp/--no-warp", "warp", default=None,
               help="Force rubberband warp on/off (default: auto-detect rubberband).")
 @click.option("--pattern", default="mutation-loop",
-              help="Beat archetype pattern (default: mutation-loop).")
+              type=click.Choice(beat_random32.available_patterns()),
+              help="Beat archetype (default: mutation-loop).")
 @json_option
 @command
 def random32(name, bpm, key, db_path, seed, export_format, warp, pattern):
     """Build a full 32-bar beat PROJECT from the sample db using a declarative
-    arrangement pattern. Supports --pattern mutation-loop (default), drop-machine,
-    verse-chorus, etc. Drums + bass + melody tracks, clips, real arrangement,
-    rendered + exported. Warp defaults to rubberband when available."""
+    arrangement archetype. --pattern picks the archetype (mutation-loop, layer-builder,
+    drop-machine, verse-chorus, octave-journey, dj-intro, beat-tape, layer-stripper).
+    Builds drums + bass + melody tracks, clips, a real arrangement (per-section layer
+    on/off + melody treatments), then renders + exports. Warp defaults to rubberband."""
     data = beat_random32.render(Path.cwd(), name, db_path=db_path, tempo=bpm,
                                 key=key, seed=seed, export_format=export_format, warp=warp,
                                 pattern=pattern)
     out = data["export"].get("out") or data["export"].get("path")
     return data, (
-        f"random32 '{name}' -> {out} | {data['tempo']:g} BPM, key {data['key']}, "
-        f"32 bars | {data['engine']} | bass {data['bass']} | mel {data['melody']}"
+        f"random32 '{name}' [{data['pattern']}] -> {out} | {data['tempo']:g} BPM, "
+        f"key {data['key']}, 32 bars | {data['engine']} | "
+        f"bass {data['bass']} | mel {data['melody']}"
     )

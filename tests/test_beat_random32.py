@@ -55,22 +55,41 @@ def test_render_builds_full_project(tmp_path, library_db):
 
     proj = tmp_path / "beat"
     assert (proj / "project.toml").exists()
+    assert data["pattern"] == "mutation-loop"
     assert data["engine"] == "none"          # warp disabled in test
     assert data["tempo"] == 120.0
     assert data["key"] == "A"
     assert data["bars"] == 32
     assert data["sections"] == 4
     assert data["tracks"] == ["drums", "kit", "bass", "melody"]
-    assert data["mutations"] == ["clean", "octave-up", "lowpass", "reverse"]
+    assert data["melody_treatments"] == ["clean", "octave-up", "lowpass", "reverse"]
 
-    # the four melody mutation clips + bass + drum clips exist on disk
-    for clip in ("mel-clean", "mel-octave", "mel-lowpass", "mel-reverse",
+    # one melody clip per section + bass + drum clips exist on disk
+    for clip in ("mel-1-clean", "mel-2-octave-up", "mel-3-lowpass", "mel-4-reverse",
                  "bass-loop", "drum-loop"):
         assert (proj / "clips" / f"{clip}.toml").exists()
 
     # exported a real, non-empty file
     out = data["export"].get("out") or data["export"].get("path")
     assert out and __import__("os").path.getsize(out) > 0
+
+
+def test_pattern_drives_layers(tmp_path, library_db):
+    """A layer pattern toggles tracks off via vol automation."""
+    import tomllib
+    data = br.render(tmp_path, "lb", db_path=library_db, seed=2,
+                     export_format="wav", warp=False, pattern="layer-builder")
+    assert data["pattern"] == "layer-builder"
+    # layer-builder starts melody-only -> drums (kit) silent in section 1
+    assert data["section_layers"][0] == ["melody"]
+    kit = tomllib.loads((tmp_path / "lb" / "tracks" / "kit.toml").read_text())
+    vol = next(a for a in kit["automation"] if a["param"] == "vol")
+    assert vol["points"][0]["value"] == 0.0      # drums start muted
+
+
+def test_unknown_pattern_raises(tmp_path, library_db):
+    with pytest.raises(FileNotFoundError):
+        br.render(tmp_path, "x", db_path=library_db, warp=False, pattern="nope")
 
 
 def test_arrangement_is_32_bars(tmp_path, library_db):

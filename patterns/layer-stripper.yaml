@@ -1,0 +1,9 @@
+name: layer-stripper
+description: "Removes one major element each section, restores everything at the end. Creates tension."
+bars: 32
+section_bars: 8
+sections:
+  - {layers: [drums, bass, melody]}
+  - {layers: [drums, bass]}
+  - {layers: [drums, melody]}
+  - {layers: [drums, bass, melody]}

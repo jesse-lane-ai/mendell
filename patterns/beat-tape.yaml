@@ -1,0 +1,9 @@
+name: beat-tape
+description: "J Dilla style: sample -> +bass -> +drums -> full. Feels found-live."
+bars: 32
+section_bars: 8
+sections:
+  - {layers: [melody]}
+  - {layers: [melody, bass]}
+  - {layers: [melody, drums]}
+  - {layers: [drums, bass, melody]}

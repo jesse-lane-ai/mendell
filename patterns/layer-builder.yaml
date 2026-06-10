@@ -1,0 +1,9 @@
+name: layer-builder
+description: "Starts minimal and only adds layers: melody -> +bass -> +drums -> full. Easy trap builds."
+bars: 32
+section_bars: 8
+sections:
+  - {layers: [melody]}
+  - {layers: [melody, bass]}
+  - {layers: [melody, bass, drums]}
+  - {layers: [melody, bass, drums], melody: octave-up}

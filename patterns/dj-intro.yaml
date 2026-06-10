@@ -1,0 +1,9 @@
+name: dj-intro
+description: "Builds like a DJ intro: drums -> +bass -> +melody -> full. Good for EDM/house."
+bars: 32
+section_bars: 8
+sections:
+  - {layers: [drums]}
+  - {layers: [drums, bass]}
+  - {layers: [drums, bass, melody]}
+  - {layers: [drums, bass, melody], melody: octave-up}

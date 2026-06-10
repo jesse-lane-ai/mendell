@@ -26,6 +26,7 @@ import numpy as np
 import yaml
 
 from . import arrangement as arrangement_mod
+from . import automation as automation_mod
 from . import clips as clips_mod
 from . import engine as engine_mod
 from . import project as project_mod
@@ -68,12 +69,54 @@ def _have_warp():
     except Exception:
         return False
 
+# layer name -> the audible track whose volume we automate to toggle it
+_LAYER_TRACK = {"drums": "kit", "bass": "bass", "melody": "melody"}
+_ALL_LAYERS = ("drums", "bass", "melody")
+
+
+def available_patterns() -> list[str]:
+    """All archetype names found in patterns/."""
+    return sorted(p.stem for p in PATTERNS_DIR.glob("*.yaml"))
+
+
 def load_pattern(name: str) -> dict:
     """Load a declarative beat archetype from patterns/NAME.yaml."""
     path = PATTERNS_DIR / f"{name}.yaml"
     if not path.exists():
-        raise FileNotFoundError(f"pattern not found: {name}")
-    with open(path) as f:\n        return yaml.safe_load(f)
+        raise FileNotFoundError(
+            f"pattern not found: {name} (available: {', '.join(available_patterns())})")
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def _treatment(name) -> tuple[int, str | None]:
+    """Map a melody treatment name to (pitch_offset_semitones, process)."""
+    name = (name or "clean").strip().lower()
+    table = {
+        "clean": (0, None),
+        "octave-up": (12, None),
+        "octave-down": (-12, None),
+        "lowpass": (0, "lowpass"),
+        "reverse": (0, "reverse"),
+    }
+    if name in table:
+        return table[name]
+    if name.startswith("transpose:"):
+        return int(name.split(":", 1)[1]), None
+    raise ValueError(f"unknown melody treatment '{name}'")
+
+
+def _sections(pattern: dict) -> list[dict]:
+    """Normalize a pattern's sections into a 4-entry list of
+    {layers: set, melody: treatment-name}."""
+    secs = pattern.get("sections")
+    if not isinstance(secs, list):
+        raise ValueError(f"pattern '{pattern.get('name')}' has no 'sections' list")
+    out = []
+    for s in secs:
+        layers = set(s.get("layers", _ALL_LAYERS))
+        out.append({"layers": layers, "melody": s.get("melody", "clean")})
+    return out
 
 
 def _connect(db_path):
@@ -158,6 +201,8 @@ def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
     # nearest transpose to the chosen key, kept within +/-6 semitones
     key_semi = ((_KEY_SEMITONE[key] + 6) % 12) - 6
 
+    pattern_spec = load_pattern(pattern)
+
     con = _connect(db_path)
 
     # --- pick samples ------------------------------------------------------
@@ -193,29 +238,38 @@ def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
     clips_mod.set_params(project_dir, BASS_TRACK, "bass-loop", pitch=key_semi, loop=True)
     arrangement_mod.place(project_dir, BASS_TRACK, "bass-loop", bar=1)
 
-    # --- melody: driven by pattern mutations -------------------------------
+    # --- melody: one clip per section, treated per the pattern -------------
     tracks_mod.add(project_dir, MELODY_TRACK, "audio")
-    pattern = load_pattern("mutation-loop")
+    sections = _sections(pattern_spec)
     mel_audio = _decode(mpath)
-    for mut in pattern["tracks"]["melody"]["mutations"]:
-        clip_name = mut["name"]
-        bar = mut["bar"]
-        pitch = key_semi + mut.get("pitch_offset", 0)
-        process = mut.get("process")
+    for i, sec in enumerate(sections):
+        bar = i * SECTION_BARS + 1
+        offset, process = _treatment(sec["melody"])
+        clip_name = f"mel-{i + 1}-{sec['melody']}".replace(":", "")
         if process == "lowpass":
-            proc_path = project_dir / "samples" / f"{clip_name}.wav"
-            proc_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_wav(proc_path, _lowpass(mel_audio))
-            sample = str(proc_path)
+            sample = str(project_dir / "samples" / f"{clip_name}.wav")
+            Path(sample).parent.mkdir(parents=True, exist_ok=True)
+            _write_wav(sample, _lowpass(mel_audio))
         elif process == "reverse":
-            proc_path = project_dir / "samples" / f"{clip_name}.wav"
-            proc_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_wav(proc_path, mel_audio[::-1].copy())
-            sample = str(proc_path)
+            sample = str(project_dir / "samples" / f"{clip_name}.wav")
+            Path(sample).parent.mkdir(parents=True, exist_ok=True)
+            _write_wav(sample, mel_audio[::-1].copy())
         else:
             sample = mpath
-        _add_melody_clip(project_dir, clip_name, sample, bar=bar, pitch=pitch,
-                         native_bpm=mbpm, warp_mode=warp_mode)
+        _add_melody_clip(project_dir, clip_name, sample, bar=bar,
+                         pitch=key_semi + offset, native_bpm=mbpm, warp_mode=warp_mode)
+
+    # --- per-section layer on/off via track-volume automation --------------
+    # (vol automation renders sample-accurately, so layers toggle cleanly at
+    # 8-bar boundaries — this is how layer-builder / drop / verse-chorus work.)
+    for layer, track in _LAYER_TRACK.items():
+        prev = None
+        for i, sec in enumerate(sections):
+            on = 100.0 if layer in sec["layers"] else 0.0
+            if on != prev:
+                automation_mod.add(project_dir, track, "vol",
+                                   at=f"{i * SECTION_BARS + 1}.1", value=on, curve="step")
+                prev = on
 
     arrangement_mod.set_params(project_dir, length=float(ARRANGEMENT_BARS))
 
@@ -224,15 +278,17 @@ def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
 
     return {
         "project": project_mod.info(project_dir),
+        "pattern": pattern_spec.get("name", pattern),
         "engine": "rubberband" if use_warp else "none",
         "tempo": tempo,
         "key": key,
         "bars": ARRANGEMENT_BARS,
-        "sections": 4,
+        "sections": len(sections),
         "tracks": [DRUM_TRACK, KIT_TRACK, BASS_TRACK, MELODY_TRACK],
         "bass": os.path.basename(bpath),
         "melody": os.path.basename(mpath),
         "kit": {c: os.path.basename(p) for c, p in picks.items()},
-        "mutations": [m["name"] for m in pattern["tracks"]["melody"]["mutations"]],
+        "section_layers": [sorted(s["layers"]) for s in sections],
+        "melody_treatments": [s["melody"] for s in sections],
         "export": export_info,
     }

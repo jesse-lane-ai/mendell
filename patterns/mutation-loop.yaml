@@ -1,44 +1,9 @@
 name: mutation-loop
-description: "32-bar mutation loop — same melody sample mutated per 8-bar section (clean → octave → lowpass → reverse). Drums + bass constant."
+description: "Same melody mutated each 8-bar section (clean -> octave-up -> lowpass -> reverse). Drums + bass constant."
 bars: 32
-sections: 4
 section_bars: 8
-
-tracks:
-  drums:
-    type: midi
-    constant: true
-    clip: drum-loop
-    place: 1
-  kit:
-    type: sampler
-    one_shots: [kick, snare, hat, clap]
-  bass:
-    type: audio
-    constant: true
-    clip: bass-loop
-    warp: beats
-    place: 1
-  melody:
-    type: audio
-    warp: melodic
-    mutations:
-      - name: mel-clean
-        bar: 1
-        pitch_offset: 0
-        process: null
-      - name: mel-octave
-        bar: 9
-        pitch_offset: 12
-        process: null
-      - name: mel-lowpass
-        bar: 17
-        pitch_offset: 0
-        process: lowpass
-      - name: mel-reverse
-        bar: 25
-        pitch_offset: 0
-        process: reverse
-
-arrangement:
-  length: 32
+sections:
+  - {layers: [drums, bass, melody], melody: clean}
+  - {layers: [drums, bass, melody], melody: octave-up}
+  - {layers: [drums, bass, melody], melody: lowpass}
+  - {layers: [drums, bass, melody], melody: reverse}

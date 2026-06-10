@@ -1,0 +1,9 @@
+name: octave-journey
+description: "Melody travels by octave: original -> +12 -> -12 -> original. Bass + drums unchanged."
+bars: 32
+section_bars: 8
+sections:
+  - {layers: [drums, bass, melody], melody: clean}
+  - {layers: [drums, bass, melody], melody: octave-up}
+  - {layers: [drums, bass, melody], melody: octave-down}
+  - {layers: [drums, bass, melody], melody: clean}
