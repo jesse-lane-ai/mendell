@@ -107,9 +107,10 @@ that you can still tweak afterwards — unlike `beat make`, no loops/paths to pa
 
 ```bash
 mendell beat random32 NAME \   # project created under ./NAME/
+  --pattern ARCHETYPE \  # arrangement archetype (default: mutation-loop)
   --bpm FLOAT \          # tempo (default: random 70-160)
   --key A-G \            # key (default: random A-G)
-  --pattern mutation-loop|drop-machine|verse-chorus \n  --db PATH \            # library.db (default: ~/.config/mendell/library.db)
+  --db PATH \            # library.db (default: ~/.config/mendell/library.db)
   --seed INT \           # deterministic sample picks
   --export mp3|wav \     # export format (default: mp3)
   --warp / --no-warp \   # force warp engine (default: auto-detect rubberband)
@@ -117,21 +118,27 @@ mendell beat random32 NAME \   # project created under ./NAME/
 ```
 
 The project is a normal Mendell project: re-mix, re-arrange, swap clips, or add
-automation, then `mendell export NAME` again. The four melody mutations are four
-clips on one melody track at bars 1/9/17/25 (engine loops each until the next
-placement); octave-up is the base clip at `pitch +12`, lowpass/reverse are
-pre-rendered sample variants in the project's `samples/`.
+automation, then `mendell export NAME` again.
 
-### Arrangement (the "napkin" pattern)
+### Archetypes (`--pattern`)
 
-Four 8-bar sections = 32 bars. **Drums and bass stay constant** across all four;
-the **melody is the same loop mutated each section**:
+The library supplies the *sound*; the archetype supplies the *structure*. Each is
+a YAML file in `patterns/` with four 8-bar `sections`, each declaring `layers`
+(any of drums/bass/melody) and a melody `treatment`. Shipped:
 
-| Section | 1     | 2         | 3        | 4        |
-|---------|-------|-----------|----------|----------|
-| Melody  | clean | octave-up | lowpass  | reverse  |
-| Bass    | same  | same      | same     | same     |
-| Drums   | same  | same      | same     | same     |
+| Pattern | Shape |
+|---------|-------|
+| `mutation-loop` *(default)* | same melody mutated: clean → octave-up → lowpass → reverse |
+| `layer-builder` | melody → +bass → +drums → full |
+| `layer-stripper` | full → drop melody → drop bass → full |
+| `octave-journey` | melody original → +12 → −12 → original |
+| `dj-intro` | drums → +bass → +melody → full |
+| `drop-machine` | full → full → drums-only breakdown → drop |
+| `verse-chorus` | verse (fewer layers) ↔ chorus (all layers) |
+| `beat-tape` | sample → +bass → +drums → full |
+
+Add an archetype by dropping `patterns/<name>.yaml` — no code changes.
+Treatments: `clean`, `octave-up`, `octave-down`, `lowpass`, `reverse`, `transpose:<±n>`.
 
 ### What it does internally
 
@@ -141,8 +148,10 @@ the **melody is the same loop mutated each section**:
 3. Creates the project: `drums`(midi) → `kit`(sampler, one-shots mapped to GM
    notes) + routing, `bass`(audio), `melody`(audio).
 4. Writes a constant drum MIDI loop; places the bass loop (warped + transposed)
-   across all 32 bars; places 4 per-section melody clips with mutations.
-5. Sets the arrangement to 32 bars and exports via the real engine.
+   across all 32 bars; places one melody clip per section with its treatment.
+5. Realizes per-section **layers** as track-volume step automation (renders
+   sample-accurately, so builds/drops are real).
+6. Sets the arrangement to 32 bars and exports via the real engine.
 
 ### Warp engine
 
@@ -157,13 +166,15 @@ Warp export is slower (~15–20s) than the unwarped path.
 ```json
 {
   "project": { ... },
+  "pattern": "mutation-loop",
   "engine": "rubberband",
   "tempo": 96.0, "key": "F", "bars": 32, "sections": 4,
   "tracks": ["drums", "kit", "bass", "melody"],
   "bass": "95_Gbm_SlapSquare_01_SP.wav",
   "melody": "FAITHONTEN 90 BPM.wav",
   "kit": { "kick": "...", "snare": "...", "hat": "...", "clap": "..." },
-  "mutations": ["clean", "octave-up", "lowpass", "reverse"],
+  "section_layers": [["bass","drums","melody"], ...],
+  "melody_treatments": ["clean", "octave-up", "lowpass", "reverse"],
   "export": { "out": "/path/to/NAME/export/NAME.mp3", ... }
 }
 ```

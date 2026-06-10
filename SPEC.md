@@ -186,25 +186,39 @@ mendell midi generate <project> <track> <clip-name> --style boom-bap|lofi|trap [
 
 # Build a complete, editable 32-bar beat PROJECT from the sample library and
 # export it. Creates drums(midi)->kit(sampler) + bass(audio) + melody(audio)
-# tracks and a 4 x 8-bar arrangement: drums + bass held constant, the melody
-# mutated each section (clean -> octave-up -> lowpass -> reverse). Picks
-# kick/snare/hat/clap/bass/melody from the registered library.db, with a random
-# tempo (70-160) and key (A-G) unless pinned. Loops are warped to tempo and
-# bass + melody transposed to key.
-mendell beat random32 <name> [--bpm N] [--key A-G] [--db PATH]
-                      [--seed N] [--export mp3|wav] [--warp/--no-warp] [--json]
+# tracks and a 4 x 8-bar arrangement whose STRUCTURE comes from a declarative
+# archetype (--pattern). Picks kick/snare/hat/clap/bass/melody from the
+# registered library.db, with a random tempo (70-160) and key (A-G) unless
+# pinned. Loops are warped to tempo and bass + melody transposed to key.
+mendell beat random32 <name> [--pattern <archetype>] [--bpm N] [--key A-G]
+                      [--db PATH] [--seed N] [--export mp3|wav] [--warp/--no-warp] [--json]
 ```
 
 `beat random32` produces a real project (under `<name>/`) you can keep editing —
-re-mix, re-arrange, swap loops, automate — not a one-off WAV. The four melody
-mutations are placed as four clips on one melody track at bars 1/9/17/25; the
-engine loops each until the next placement, so each 8-bar section gets its own
-treatment. octave-up is the base clip at `pitch +12`; lowpass and reverse are
-pre-rendered sample variants stored in the project's `samples/`.
+re-mix, re-arrange, swap loops, automate — not a one-off WAV.
+
+**Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
+file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
+`drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,
+`octave-down`, `lowpass`, `reverse`, or `transpose:<±n>`). The driver builds the
+project and realizes the arrangement two ways:
+
+- **Layers** — per-section on/off is written as **track-volume step automation**
+  (vol → 0/100 at each 8-bar boundary). Volume automation renders sample-accurately,
+  so builds/drops/breakdowns are real, not approximated.
+- **Melody treatments** — one melody clip per section (bars 1/9/17/25); the engine
+  loops each until the next placement. Pitch offsets (octave/transpose) use the
+  clip `pitch` param; `lowpass`/`reverse` are pre-rendered sample variants in the
+  project's `samples/` (the unprocessed original stays referenced, so they're undoable).
+
+Shipped archetypes: `mutation-loop`, `layer-builder`, `layer-stripper`,
+`octave-journey`, `dj-intro`, `drop-machine`, `verse-chorus`, `beat-tape`. Add
+more by dropping a `patterns/<name>.yaml` — no code changes. `--pattern` is
+validated against the files present.
 
 It uses the **rubberband** warp engine (`rubberband` CLI + `pyrubberband`) by
 default when available, for independent time-stretch and pitch-shift — so the
-octave-up mutation is a clean +12 semitones and key transposition doesn't skew
+octave-up treatment is a clean +12 semitones and key transposition doesn't skew
 timing. When rubberband is absent, clips play unwarped (native tempo).
 `--warp`/`--no-warp` force the choice; the result reports
 `"engine": "rubberband" | "none"`. Sample picks are deterministic under `--seed`.

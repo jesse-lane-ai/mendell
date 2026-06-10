@@ -89,17 +89,36 @@ mendell midi generate my-song drums fill --style trap --bars 2 --json
 
 Want a whole beat straight out of your sample library? `beat random32` builds a
 complete, **editable project** — drums + bass + melody tracks, clips, and a
-32-bar arrangement (four 8-bar sections: drums and bass held constant, the melody
-mutated each section: clean → octave-up → lowpass → reverse) — then renders and
-exports it. It pulls kick/snare/hat/clap/bass/melody from the registered
-`library.db`, picks a random tempo (70–160) and key (A–G), warps every loop to
-tempo, and transposes bass + melody to key:
+32-bar arrangement — then renders and exports it. It pulls
+kick/snare/hat/clap/bass/melody from the registered `library.db`, picks a random
+tempo (70–160) and key (A–G), warps every loop to tempo, and transposes bass +
+melody to key. The *arrangement* itself comes from a declarative **archetype**
+(`--pattern`): the library does the sound, the archetype does the structure.
 
 ```bash
-mendell beat random32 my-beat                       # all random -> my-beat/ project + export
-mendell beat random32 my-beat --bpm 120 --key A
-mendell beat random32 my-beat --seed 909 --export wav --json
+mendell beat random32 my-beat                       # mutation-loop (default) -> project + export
+mendell beat random32 my-beat --pattern drop-machine --bpm 120 --key A
+mendell beat random32 my-beat --pattern layer-builder --seed 909 --export wav --json
 ```
+
+Archetypes live as YAML in [`patterns/`](patterns/) — each is a list of 8-bar
+`sections` declaring which layers (drums/bass/melody) play and how the melody is
+treated (clean / octave-up / octave-down / lowpass / reverse). Per-section layer
+on/off is real track-volume automation, so builds and drops render accurately.
+Shipped archetypes:
+
+| Pattern | Shape |
+|---------|-------|
+| `mutation-loop` *(default)* | same melody mutated each section: clean → octave-up → lowpass → reverse |
+| `layer-builder` | melody → +bass → +drums → full |
+| `layer-stripper` | full → drop melody → drop bass → full |
+| `octave-journey` | melody original → +12 → −12 → original |
+| `dj-intro` | drums → +bass → +melody → full |
+| `drop-machine` | full → full → drums-only breakdown → drop |
+| `verse-chorus` | verse (fewer layers) ↔ chorus (all layers) |
+| `beat-tape` | sample → +bass → +drums → full (J Dilla feel) |
+
+Add your own by dropping a new `patterns/<name>.yaml` — no code changes needed.
 
 Because it's a real project, you can keep working on it afterwards — re-mix,
 move sections, swap a loop, add automation — then `mendell export` again. When
