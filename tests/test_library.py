@@ -2,10 +2,20 @@
 
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from mendell import library
+from mendell.clips import audio_analysis
 from mendell.errors import BadInputError, NotFoundError
+
+
+def _write_wav(path: Path, seconds: float, sr: int = 22050) -> None:
+    """Write a real (silent) WAV of a given length — enough for the library's
+    header-only duration probe and bar-alignment math (content is irrelevant)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(path), np.zeros(int(seconds * sr), dtype="float32"), sr)
 
 
 @pytest.fixture
@@ -101,6 +111,83 @@ def test_guess_category_falls_back_to_parent_folder():
     assert library.guess_category(Path("Misc/totally-unrecognized.wav")) == "one-shot"
 
 
+# --- loop / one-shot kind ----------------------------------------------------
+
+def test_detect_kind_from_filename():
+    assert audio_analysis.detect_kind_from_filename("dark-loop.wav") == "loop"
+    assert audio_analysis.detect_kind_from_filename("drumloop_90.wav") == "loop"
+    assert audio_analysis.detect_kind_from_filename("snare-oneshot.wav") == "one-shot"
+    assert audio_analysis.detect_kind_from_filename("vocal-stab.wav") == "one-shot"
+    assert audio_analysis.detect_kind_from_filename("808-hit.wav") == "one-shot"
+    # bounded matching: "hit" inside "white", "shot" inside "gunshot" don't count
+    assert audio_analysis.detect_kind_from_filename("white-noise.wav") is None
+    assert audio_analysis.detect_kind_from_filename("gunshot-fx.wav") is None
+    assert audio_analysis.detect_kind_from_filename("piano-c3.wav") is None
+
+
+def test_kind_one_shot_via_duration(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    _write_wav(folder / "blip.wav", 0.3)  # short, no keyword, no bpm
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder))["name"])["files"]}
+    assert f["pack/blip.wav"]["kind"] == "one-shot"
+    assert f["pack/blip.wav"]["kind_source"] == "duration"
+    assert f["pack/blip.wav"]["duration"] == 0.3
+
+
+def test_kind_loop_via_bar_alignment(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    # 4.0s == 2 bars at 120 BPM; filename carries the tempo but not "loop".
+    _write_wav(folder / "melody-phrase-120bpm.wav", 4.0)
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder))["name"])["files"]}
+    entry = f["pack/melody-phrase-120bpm.wav"]
+    assert entry["category"] == "melody"   # orthogonal to kind
+    assert entry["kind"] == "loop"
+    assert entry["kind_source"] == "bar-align"
+
+
+def test_kind_unknown_when_inconclusive(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    # mid-length, no filename keyword, no tempo, ambiguous category -> honest unknown
+    _write_wav(folder / "atmosphere.wav", 3.7)
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder))["name"])["files"]}
+    assert f["pack/atmosphere.wav"]["kind"] == "unknown"
+    assert "kind_source" not in f["pack/atmosphere.wav"]
+
+
+def test_kind_filename_keyword_beats_a_short_duration(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    # explicitly a loop by name, even though it's shorter than ONESHOT_MAX_SEC
+    _write_wav(folder / "micro-loop.wav", 0.5)
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder))["name"])["files"]}
+    assert f["pack/micro-loop.wav"]["kind"] == "loop"
+    assert f["pack/micro-loop.wav"]["kind_source"] == "filename"
+
+
+def test_search_by_kind(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    _write_wav(folder / "drum-loop.wav", 4.0)  # loop via filename
+    _write_wav(folder / "clap.wav", 0.2)       # one-shot via duration
+    library.add("pack", str(folder))
+
+    assert [m["ref"] for m in library.search(kind="loop")["matches"]] == ["pack/drum-loop.wav"]
+    assert [m["ref"] for m in library.search(kind="one-shot")["matches"]] == ["pack/clap.wav"]
+
+
+def test_unreadable_file_has_no_duration_and_falls_back_to_category(lib_config, sample_folder):
+    """Placeholder/corrupt files (no readable header) still index — kind falls
+    back to the category prior, with no duration recorded."""
+    f = {x["ref"]: x for x in library.show(library.add("drum-pack", str(sample_folder))["name"])["files"]}
+    kick = f["drum-pack/Kicks/kick-808.wav"]
+    assert "duration" not in kick               # b"fake" bytes -> header unreadable
+    assert kick["kind"] == "one-shot"           # drum category prior
+    assert kick["kind_source"] == "category"
+    assert f["drum-pack/Loops/dark-loop.wav"]["kind"] == "loop"  # filename keyword
+
+
 # --- BPM detection -----------------------------------------------------------
 
 def test_add_caches_bpm_from_filename_for_any_category(lib_config, tmp_path):
@@ -142,6 +229,7 @@ def test_analyze_flag_runs_signal_analysis_only_for_loops_without_filename_bpm(l
     assert analyzed[0].endswith("loop-no-hint.wav")
     assert by_ref["pack/Loops/loop-no-hint.wav"] == {
         "ref": "pack/Loops/loop-no-hint.wav", "category": "loop", "bpm": 99.0, "bpm_source": "tempo_analysis",
+        "kind": "loop", "kind_source": "filename",  # "loop" in the filename
     }
     assert "bpm" not in by_ref["pack/Kicks/kick-no-hint.wav"]
     assert by_ref["pack/Loops/loop-128bpm.wav"]["bpm_source"] == "filename"

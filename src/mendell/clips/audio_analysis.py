@@ -16,6 +16,7 @@ from typing import Any
 
 import librosa
 import numpy as np
+import soundfile as sf
 
 WARP_MODES = ("beats", "melodic", "harmonic", "vocal", "complex")
 
@@ -39,6 +40,12 @@ _FILENAME_WARP_KEYWORDS: dict[str, tuple[str, ...]] = {
 _BPM_FILENAME_RE = re.compile(r"(\d{2,3}(?:\.\d+)?)\s*[-_]?\s*bpm|bpm\s*[-_]?\s*(\d{2,3}(?:\.\d+)?)", re.I)
 _BARE_NUMBER_RE = re.compile(r"(?<![\d.])(\d{2,3})(?![\d.])")
 
+# Loop vs one-shot ("kind") from an explicit filename keyword. "loop" is matched
+# as a substring (it shows up glued into compounds like "drumloop"); the
+# one-shot tokens use boundaries so e.g. "white"/"gunshot" don't read as "hit"/
+# "shot". See `detect_kind_from_filename`.
+_ONESHOT_FILENAME_RE = re.compile(r"(?<![a-z])(?:one[\s_-]?shot|hit|stab|shot)(?![a-z])")
+
 
 def detect_warp_from_filename(filename: str) -> str | None:
     stem = Path(filename).stem.lower()
@@ -61,6 +68,34 @@ def detect_bpm_from_filename(filename: str) -> float | None:
         if 40.0 <= value <= 220.0:
             return value
     return None
+
+
+def detect_kind_from_filename(filename: str) -> str | None:
+    """Loop vs one-shot from an explicit filename keyword, or None when absent.
+
+    Only an unambiguous keyword counts here — duration/bar-alignment fill in the
+    rest (see ``library._detect_kind``). "loop" anywhere wins; a bounded
+    one-shot token (oneshot/one-shot/hit/stab/shot) is the negative signal.
+    """
+    stem = Path(filename).stem.lower()
+    if "loop" in stem:
+        return "loop"
+    if _ONESHOT_FILENAME_RE.search(stem):
+        return "one-shot"
+    return None
+
+
+def probe_duration_seconds(path: str) -> float | None:
+    """Duration in seconds read from the audio *header* (no full decode), or
+    None when the header can't be read — a corrupt/placeholder file or a format
+    libsndfile can't open. Cheap enough to run on every indexed file."""
+    try:
+        info = sf.info(path)
+    except Exception:
+        return None
+    if not info.samplerate:
+        return None
+    return info.frames / float(info.samplerate)
 
 
 class _AnalysisCache:

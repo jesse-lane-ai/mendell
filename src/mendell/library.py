@@ -47,6 +47,15 @@ _CATEGORY_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
     (("melody", "melodic", "lead", "synth", "pad", "chord", "keys"), "melody"),
 ]
 
+# Categories that are inherently single hits — used as a weak `kind` fallback
+# when neither the filename nor the duration/bar-alignment is conclusive.
+_DRUM_CATEGORIES = {"kick", "snare", "clap", "hat", "tom", "crash", "ride", "rim", "perc"}
+
+# Loop/one-shot ("kind") detection tuning.
+ONESHOT_MAX_SEC = 1.2            # at/under this, treat as a one-shot hit
+BAR_ALIGN_TOL = 0.06            # ±6% of a bar counts as "a whole number of bars"
+_LOOP_BAR_COUNTS = (1, 2, 4, 8, 16)
+
 
 DB_FILENAME = "library.db"
 
@@ -117,6 +126,13 @@ def _conn():
         con.close()
 
 
+def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Idempotent ``ALTER TABLE ... ADD COLUMN`` for evolving an existing DB."""
+    existing = {row["name"] for row in con.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def _migrate(con: sqlite3.Connection) -> None:
     con.executescript("""
         CREATE TABLE IF NOT EXISTS libraries (
@@ -133,12 +149,21 @@ def _migrate(con: sqlite3.Connection) -> None:
             category     TEXT NOT NULL,
             bpm          REAL,
             bpm_source   TEXT,
+            kind         TEXT,
+            kind_source  TEXT,
+            duration     REAL,
             UNIQUE(library_name, rel_path)
         );
         CREATE INDEX IF NOT EXISTS idx_files_library  ON files(library_name);
         CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
         CREATE INDEX IF NOT EXISTS idx_files_bpm      ON files(bpm);
     """)
+    # Added after the initial release — backfill onto pre-existing DBs (the
+    # columns stay NULL on old rows until the folder is re-scanned).
+    _add_column_if_missing(con, "files", "kind", "TEXT")
+    _add_column_if_missing(con, "files", "kind_source", "TEXT")
+    _add_column_if_missing(con, "files", "duration", "REAL")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_files_kind ON files(kind)")
 
 
 # ---------------------------------------------------------------------------
@@ -162,15 +187,60 @@ def _detect_bpm(file_path: Path, category: str, *, analyze: bool) -> tuple[float
     return None, None
 
 
+def _detect_kind(
+    file_path: Path, category: str, bpm: float | None, duration: float | None
+) -> tuple[str, str | None]:
+    """Classify a file as ``loop`` / ``one-shot`` / ``unknown``, orthogonal to
+    its instrument ``category``. Cheap-first, most-precise-wins:
+
+      1. an explicit filename keyword (``...loop...`` / ``...oneshot/hit/...``);
+      2. duration — at/under ``ONESHOT_MAX_SEC`` it's a hit;
+      3. bar-alignment — a mid-length file whose duration is (within tolerance)
+         a whole number of bars at its known tempo is a loop;
+      4. the instrument category as a weak prior (drums → one-shot, ``loop`` →
+         loop), else ``unknown`` — an honest "don't know" beats a wrong guess.
+    """
+    explicit = audio_analysis.detect_kind_from_filename(file_path.name)
+    if explicit is not None:
+        return explicit, "filename"
+
+    if duration is not None:
+        if duration <= ONESHOT_MAX_SEC:
+            return "one-shot", "duration"
+        if bpm:
+            bar_seconds = 4.0 * 60.0 / bpm
+            if bar_seconds > 0:
+                bars = duration / bar_seconds
+                nearest = min(_LOOP_BAR_COUNTS, key=lambda n: abs(n - bars))
+                if abs(bars - nearest) <= BAR_ALIGN_TOL * nearest:
+                    return "loop", "bar-align"
+
+    if category in _DRUM_CATEGORIES:
+        return "one-shot", "category"
+    if category == "loop":
+        return "loop", "category"
+    return "unknown", None
+
+
 def _index_folder(folder: Path, *, analyze: bool = False) -> list[dict[str, Any]]:
     indexed = []
     for file_path in _scan_folder(folder):
         category = guess_category(file_path)
         bpm, bpm_source = _detect_bpm(file_path, category, analyze=analyze)
-        entry: dict[str, Any] = {"path": str(file_path.relative_to(folder)), "category": category}
+        duration = audio_analysis.probe_duration_seconds(str(file_path))
+        kind, kind_source = _detect_kind(file_path, category, bpm, duration)
+        entry: dict[str, Any] = {
+            "path": str(file_path.relative_to(folder)),
+            "category": category,
+            "kind": kind,
+        }
         if bpm is not None:
             entry["bpm"] = bpm
             entry["bpm_source"] = bpm_source
+        if kind_source is not None:
+            entry["kind_source"] = kind_source
+        if duration is not None:
+            entry["duration"] = duration
         indexed.append(entry)
     return indexed
 
@@ -185,9 +255,14 @@ def _require_library(con: sqlite3.Connection, name: str) -> sqlite3.Row:
 def _write_files(con: sqlite3.Connection, name: str, indexed: list[dict[str, Any]]) -> None:
     con.execute("DELETE FROM files WHERE library_name = ?", (name,))
     con.executemany(
-        "INSERT INTO files (library_name, rel_path, category, bpm, bpm_source) VALUES (?,?,?,?,?)",
+        "INSERT INTO files "
+        "(library_name, rel_path, category, bpm, bpm_source, kind, kind_source, duration) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         [
-            (name, f["path"], f["category"], f.get("bpm"), f.get("bpm_source"))
+            (
+                name, f["path"], f["category"], f.get("bpm"), f.get("bpm_source"),
+                f.get("kind"), f.get("kind_source"), f.get("duration"),
+            )
             for f in indexed
         ],
     )
@@ -203,15 +278,29 @@ def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _add_file_metadata(summary: dict[str, Any], row: sqlite3.Row) -> dict[str, Any]:
+    """Attach the optional per-file metadata (bpm/kind/duration) to ``summary``,
+    omitting whatever a row doesn't carry — shared by ``show`` and ``search`` so
+    a file looks the same however you reach it. ``kind`` may be absent on rows
+    indexed before the loop/one-shot feature, until the folder is re-scanned."""
+    if row["bpm"] is not None:
+        summary["bpm"] = row["bpm"]
+        summary["bpm_source"] = row["bpm_source"]
+    if row["kind"] is not None:
+        summary["kind"] = row["kind"]
+    if row["kind_source"] is not None:
+        summary["kind_source"] = row["kind_source"]
+    if row["duration"] is not None:
+        summary["duration"] = round(row["duration"], 3)
+    return summary
+
+
 def _file_row_to_summary(library_name: str, row: sqlite3.Row) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "ref": f"{library_name}/{row['rel_path']}",
         "category": row["category"],
     }
-    if row["bpm"] is not None:
-        summary["bpm"] = row["bpm"]
-        summary["bpm_source"] = row["bpm_source"]
-    return summary
+    return _add_file_metadata(summary, row)
 
 
 def guess_category(file_path: Path) -> str:
@@ -314,6 +403,7 @@ def search(
     tag: str | None = None,
     category: str | None = None,
     bpm: float | None = None,
+    kind: str | None = None,
 ) -> dict[str, Any]:
     with _conn() as con:
         if library is not None:
@@ -337,6 +427,10 @@ def search(
             clauses.append("f.category = ?")
             params.append(category)
 
+        if kind is not None:
+            clauses.append("f.kind = ?")
+            params.append(kind)
+
         if bpm is not None:
             clauses.append("f.bpm IS NOT NULL AND ABS(f.bpm - ?) <= ?")
             params.extend([bpm, BPM_TOLERANCE])
@@ -348,7 +442,7 @@ def search(
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
             SELECT f.library_name, f.rel_path, f.category, f.bpm, f.bpm_source,
-                   l.tags
+                   f.kind, f.kind_source, f.duration, l.tags
             FROM files f
             JOIN libraries l ON l.name = f.library_name
             {where}
@@ -363,9 +457,7 @@ def search(
                 "category": r["category"],
                 "tags": [t for t in r["tags"].split(",") if t],
             }
-            if r["bpm"] is not None:
-                m["bpm"] = r["bpm"]
-                m["bpm_source"] = r["bpm_source"]
+            _add_file_metadata(m, r)
             matches.append(m)
 
         return {"query": query, "matches": matches, "count": len(matches)}

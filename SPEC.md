@@ -310,20 +310,20 @@ mendell library scan [<name>] [--analyze] [--json]
 mendell library show <name> [--json]
 
 # Search across all registered folders (or scope to one with --library) by filename
-# keyword, tag, category, and/or BPM (±2 BPM tolerance) — the building block agents
-# use to find material without knowing any paths up front
-mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--bpm <n>] [--json]
+# keyword, tag, category, kind, and/or BPM (±2 BPM tolerance) — the building block
+# agents use to find material without knowing any paths up front
+mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--kind loop|one-shot|unknown] [--bpm <n>] [--json]
 
 # Unregister (does not touch the folder or its files on disk)
 mendell library remove <name>
 ```
 
-### Indexing & BPM Detection
+### Indexing, BPM & Kind Detection
 
 `library add`/`library scan` walk the registered folder once and cache, per file,
-the same two things `kit load` and `clip import` already derive: a **category**
-guess (kick/snare/hat/loop/one-shot/... from filename and parent-folder keywords)
-and a **BPM** guess.
+the same things `kit load` and `clip import` already derive — a **category** guess
+(kick/snare/hat/loop/one-shot/... from filename and parent-folder keywords) and a
+**BPM** guess — plus the file's **duration** and a **kind** classification.
 
 BPM detection is two-tier, mirroring the `clip import` pipeline (see "Audio Clips"):
 
@@ -338,12 +338,32 @@ BPM detection is two-tier, mirroring the `clip import` pipeline (see "Audio Clip
 
 Both checks are cheap to skip — files with no detectable BPM simply omit the field.
 
+**Kind — `loop` vs `one-shot` (vs `unknown`).** This is a separate axis from
+`category`: `category` says *what* a file is (kick, bass, melody…), `kind` says
+whether it's a sustained phrase or a single hit — so a `bass` file can be either.
+It's resolved cheapest-first, most-precise-wins (`kind_source` records which rule
+fired):
+
+- **`filename`** — an explicit keyword (`...loop...`, or a bounded
+  `oneshot`/`hit`/`stab`/`shot`) wins outright.
+- **`duration`** — a file at/under ~1.2s with no keyword is a one-shot hit. Duration
+  comes from a header-only read (no decode), so it's computed for every file.
+- **`bar-align`** — a longer file whose duration is (within ±6%) a whole number of
+  bars at its known BPM is a loop. This is what catches an unlabeled `bass`/`melody`
+  loop.
+- **`category`** *(weak fallback)* — drum categories → one-shot, `loop` → loop.
+- Otherwise **`unknown`** — an honest "don't know" rather than a wrong guess; filter
+  for these to triage a messy pack.
+
+Files with an unreadable header (corrupt/placeholder) simply omit `duration` and
+fall back to the keyword/category rules.
+
 ```bash
-mendell library search "808" --bpm 90 --json
+mendell library search "808" --bpm 90 --kind loop --json
 ```
 ```json
 { "ok": true, "data": { "matches": [
-  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "loop", "bpm": 90.0, "bpm_source": "filename", "tags": ["drums", "lofi"] }
+  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "loop", "kind": "loop", "kind_source": "filename", "bpm": 90.0, "bpm_source": "filename", "duration": 3.556, "tags": ["drums", "lofi"] }
 ] } }
 ```
 

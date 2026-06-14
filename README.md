@@ -213,16 +213,21 @@ as many folders as you like:
 
 ```bash
 mendell library add my-loops ~/Samples/lofi-loops --tags loops,lofi --json
-mendell library search --bpm 90 --category loop --json   # find loops by tempo, no path-hunting
+mendell library search --bpm 90 --kind loop --json       # real loops at ~90 BPM, no path-hunting
+mendell library search --category bass --kind one-shot --json   # bass *hits* for a sampler, not phrases
 mendell kit load my-song kit --library my-drums --json   # load a registered folder straight onto a track
 mendell sampler map add my-song kit --note C2 --sample my-drums/Kicks/808.wav --json
 ```
 
-`library add`/`library scan` index each folder's files once and cache a guessed
-category (kick/snare/hat/loop/...) and BPM (from the filename, instantly — pass
-`--analyze` to also tempo-detect loops with no filename hint) per file, so
-`library search`/`library show` answer immediately — no path-hunting, agent-friendly
-by design. See [`SPEC.md`](SPEC.md#sample-library) for the full reference.
+`library add`/`library scan` index each folder's files once and cache, per file, a
+guessed category (kick/snare/hat/loop/...), a BPM (from the filename, instantly —
+pass `--analyze` to also tempo-detect loops with no filename hint), and a **kind**
+— `loop` / `one-shot` / `unknown`, classified from the filename, the file's
+duration, and bar-alignment to its BPM. Category says *what* a sample is; kind says
+whether it's a phrase or a single hit (the two are independent, so you can ask for a
+`bass` `one-shot`). `library search`/`library show` answer immediately from the cache
+— no path-hunting, agent-friendly by design. See [`SPEC.md`](SPEC.md#sample-library)
+for the full reference.
 
 Or build one up from the primitives directly:
 
@@ -269,7 +274,7 @@ mendell --help
 
 ## Tests
 
-37 unit tests across three files, runnable with pytest (or `uv run pytest` if you use uv):
+Unit tests across five files, runnable with pytest (or `uv run pytest` if you use uv):
 
 ```bash
 pytest tests/
@@ -281,6 +286,6 @@ uv run pytest tests/
 |------|----------|
 | `tests/test_beat.py` | `beat.new` / `beat.make` scaffolding, duration parsing, pattern generation, variation tiling |
 | `tests/test_durations.py` | `parse_duration_ms` / `format_duration_ms` edge cases |
-| `tests/test_library.py` | Sample library — add/scan/search/remove, BPM caching, category inference, env-var config isolation |
+| `tests/test_library.py` | Sample library — add/scan/search/remove, BPM caching, category inference, loop/one-shot kind detection, env-var config isolation |
 | `tests/test_registry.py` | Project registry — auto-recording on create, genre, idempotent refresh, lookups, removal |
 | `tests/test_config.py` | Global config — config.json materialization, OS-aware paths, projects-folder resolution, legacy-DB migration |
