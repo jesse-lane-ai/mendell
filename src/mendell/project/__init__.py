@@ -49,8 +49,14 @@ def create(
     scale: str = DEFAULTS["scale"],
     sample_rate: int = DEFAULTS["sample_rate"],
     time_sig: str = DEFAULTS["time_sig"],
+    genre: str | None = None,
 ) -> Path:
-    """Scaffold a new project directory with project.toml and empty subdirs."""
+    """Scaffold a new project directory with project.toml and empty subdirs.
+
+    ``genre`` is not stored in project.toml; it is recorded only in the global
+    project registry (the shared SQLite DB), alongside the metadata mirrored
+    from project.toml.
+    """
     project_dir = parent / name
     if (project_dir / paths.PROJECT_FILE).exists():
         raise BadInputError(f"project '{name}' already exists at {project_dir}")
@@ -82,6 +88,14 @@ def create(
 
     # Empty timeline scaffold for the arrangement.
     write_toml(paths.arrangement_toml(project_dir), {"clips": [], "arrangement": {}})
+
+    # Record in the global project registry (a secondary index in the shared
+    # SQLite DB). Best-effort and imported lazily to avoid an import cycle:
+    # a registry failure must never break creation, since project.toml is the
+    # source of truth.
+    from .. import registry
+
+    registry.record_safe(project_dir, genre=genre)
 
     return project_dir
 

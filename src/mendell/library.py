@@ -48,11 +48,20 @@ _CATEGORY_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
 ]
 
 
-def _db_path() -> Path:
+def db_path() -> Path:
+    """Path to the shared user-level Mendell SQLite DB.
+
+    Holds the sample library *and* the project registry (see ``registry.py``);
+    overridable via the ``MENDELL_LIBRARY_CONFIG`` env var, primarily for tests.
+    """
     override = os.environ.get(CONFIG_ENV_VAR)
     if override:
         return Path(override)
     return Path.home() / ".config" / "mendell" / "library.db"
+
+
+def _db_path() -> Path:
+    return db_path()
 
 
 @contextmanager

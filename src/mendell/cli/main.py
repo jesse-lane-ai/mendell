@@ -12,6 +12,7 @@ from . import library as library_cli
 from . import midi as midi_cli
 from . import mixer as mixer_cli
 from . import project as project_cli
+from . import registry as registry_cli
 from . import sampler as sampler_cli
 from . import timing as timing_cli
 from . import tracks as tracks_cli
@@ -37,6 +38,7 @@ cli.add_command(automation_cli.auto)
 cli.add_command(engine_cli.export)
 cli.add_command(kit_cli.kit)
 cli.add_command(library_cli.library)
+cli.add_command(registry_cli.projects)
 cli.add_command(beat_cli.beat)
 cli.add_command(midi_cli.midi)
 

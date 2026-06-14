@@ -16,9 +16,11 @@ from ._base import command, json_option
 @click.option("--scale", type=str, default=None)
 @click.option("--sample-rate", "sample_rate", type=int, default=None)
 @click.option("--time-sig", "time_sig", type=str, default=None)
+@click.option("--genre", type=str, default=None,
+              help="Genre tag recorded in the project registry (not stored in project.toml).")
 @json_option
 @command
-def new(name, bpm, key, scale, sample_rate, time_sig):
+def new(name, bpm, key, scale, sample_rate, time_sig, genre):
     kwargs = {}
     for k, v in (
         ("bpm", bpm),
@@ -26,6 +28,7 @@ def new(name, bpm, key, scale, sample_rate, time_sig):
         ("scale", scale),
         ("sample_rate", sample_rate),
         ("time_sig", time_sig),
+        ("genre", genre),
     ):
         if v is not None:
             kwargs[k] = v

@@ -97,7 +97,7 @@ def new(parent: Path, name: str, *, style: str) -> dict[str, Any]:
         raise BadInputError(f"unknown style '{style}' (expected one of {sorted(STYLES)})")
     preset = STYLES[style]
 
-    project_dir = project_mod.create(parent, name, bpm=preset["bpm"], key=preset["key"], scale=preset["scale"])
+    project_dir = project_mod.create(parent, name, bpm=preset["bpm"], key=preset["key"], scale=preset["scale"], genre=style)
 
     tracks_mod.add(project_dir, DRUM_TRACK, "midi")
     tracks_mod.add(project_dir, KIT_TRACK, "sampler")
@@ -212,7 +212,7 @@ def make(
     eff_key = key if key is not None else preset["key"]
 
     # Scaffold: project + midi drum track routed into a sampler "kit" track.
-    project_dir = project_mod.create(parent, name, bpm=eff_bpm, key=eff_key, scale=preset["scale"])
+    project_dir = project_mod.create(parent, name, bpm=eff_bpm, key=eff_key, scale=preset["scale"], genre=style)
     tracks_mod.add(project_dir, DRUM_TRACK, "midi")
     tracks_mod.add(project_dir, KIT_TRACK, "sampler")
     sampler_mod.create(project_dir, KIT_TRACK)

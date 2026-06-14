@@ -22,6 +22,10 @@ for an architecture overview.
   - Debian/Ubuntu: `sudo apt install rubberband-cli`
   - macOS (Homebrew): `brew install rubberband`
   - Arch: `sudo pacman -S rubberband`
+  - Windows: download the prebuilt command-line binary from
+    [breakfastquay.com/rubberband](https://breakfastquay.com/rubberband/)
+    and add the folder containing `rubberband.exe` to your `PATH`
+    (see the [Windows](#windows) section below)
 
   Without it, `mendell export` raises a clear `EngineError` naming the
   missing binary as soon as it encounters a warped clip — everything else
@@ -49,6 +53,66 @@ Verify the install:
 ```bash
 mendell --help
 ```
+
+## Windows
+
+Mendell runs on Windows — the codebase is pure cross-platform Python and every
+dependency ships a Windows wheel. There are three ways to install, easiest
+first.
+
+### WSL2 (recommended)
+
+If you have the Windows Subsystem for Linux, just follow the Linux
+instructions above inside your WSL distro — install the system binaries with
+`apt` and `pip install -e .` as normal. This is the smoothest path and gives
+you the same environment the project is developed against:
+
+```bash
+sudo apt update && sudo apt install -y rubberband-cli ffmpeg
+git clone https://github.com/jesse-lane-ai/mendell.git mendell
+cd mendell
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+### Native Windows (PowerShell)
+
+Install [Python 3.11+](https://www.python.org/downloads/windows/) (tick "Add
+python.exe to PATH" in the installer), then:
+
+```powershell
+git clone https://github.com/jesse-lane-ai/mendell.git mendell
+cd mendell
+python -m venv .venv
+.venv\Scripts\Activate.ps1   # or .venv\Scripts\activate.bat in cmd.exe
+pip install -e .
+mendell --help
+```
+
+This installs the `mendell` console script and all Python dependencies. Two
+optional command-line binaries are only needed for specific features — install
+them and add each `.exe` to your `PATH`:
+
+- **`rubberband`** — only for warped audio clips and clip-level pitch
+  automation. Download the prebuilt binary from
+  [breakfastquay.com/rubberband](https://breakfastquay.com/rubberband/),
+  unzip it, and add the folder containing `rubberband.exe` to `PATH`. Without
+  it, `mendell export` raises a clear `EngineError` the moment it hits a warped
+  clip; everything else works.
+- **`ffmpeg`** — only for `beat random32`, which decodes audio from your
+  sample library. Grab a build from
+  [ffmpeg.org/download.html](https://ffmpeg.org/download.html) (or
+  `winget install Gyan.FFmpeg`) and add `ffmpeg.exe` to `PATH`.
+
+To check that `PATH` is set up correctly, open a new terminal and run
+`rubberband --help` and `ffmpeg -version`.
+
+### Docker Desktop
+
+The [Docker](#docker) image below also runs on Windows via Docker Desktop and
+bundles the `rubberband` system dependency — the most reproducible option for
+agent use. Add `ffmpeg` to the image's `apt-get install` line if you need
+`beat random32`.
 
 ## Docker
 

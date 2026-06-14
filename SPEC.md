@@ -125,11 +125,14 @@ mendell timing <project> --frames 352800
 ### Project
 
 ```bash
-mendell new <name> [--bpm 120] [--key C] [--scale minor] [--sample-rate 44100] [--time-sig 4/4]
+mendell new <name> [--bpm 120] [--key C] [--scale minor] [--sample-rate 44100] [--time-sig 4/4] [--genre <genre>]
 mendell info <project> [--json]
 mendell set <project> --bpm 140
 mendell set <project> --key A --scale major
 ```
+
+Creating a project also records it in the global **Project Registry** (see that section);
+`--genre` tags it there at creation time (genre is registry-only, not stored in `project.toml`).
 
 `mendell new` creates a fully scaffolded project directory ready for use:
 
@@ -337,6 +340,43 @@ Out of scope for v1: copying/syncing library contents into projects (samples are
 copied into `<project>/samples/` on use, exactly as they are today — the library only
 stores *references*), audio analysis/tagging beyond filename heuristics, and remote/cloud
 folders (local paths only).
+
+### Project Registry
+
+A global table of every project Mendell has created, with its metadata (name, genre,
+key, scale, bpm, time signature, sample rate, and `created` / `last_updated`
+timestamps). Like the sample library it lives in the shared user-level SQLite DB
+(`~/.config/mendell/library.db`, overridable via `MENDELL_LIBRARY_CONFIG`), so it spans
+projects and is queryable from anywhere. Each project's `project.toml` remains the source
+of truth — the registry is a secondary index.
+
+Rows are recorded **automatically** whenever a project is created — any creation path
+(`mendell new`, `mendell beat new`, `mendell beat random32`) funnels through the same
+seam. `beat new` records its `--style` as the genre; `mendell new` accepts an optional
+`--genre`. Entries are keyed by absolute project directory, so two projects that share a
+`name` never collide (address those by full path).
+
+```bash
+# List every recorded project, most-recently-updated first
+mendell projects list [--json]
+
+# Show one entry by project name or directory path
+mendell projects show <project> [--json]
+
+# Re-read a project's metadata into the registry, bump last_updated, and
+# optionally set/refresh its genre. Also how you register a project that
+# predates the registry. A bare re-sync never wipes an existing genre.
+mendell projects sync <project> [--genre <genre>] [--json]
+
+# Drop an entry (the project files on disk are left untouched)
+mendell projects remove <project> [--json]
+```
+
+`mendell new` also takes `--genre <genre>` to tag a project at creation time. Genre is
+registry-only metadata; it is **not** written into `project.toml`.
+
+Recording is best-effort: if the registry write ever fails, project creation still
+succeeds (project.toml is already on disk) — the registry never blocks core work.
 
 ### Tracks
 
