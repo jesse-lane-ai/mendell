@@ -39,8 +39,14 @@ SR = 44100
 KEYS = ["A", "B", "C", "D", "E", "F", "G"]
 # Semitone offset of each key from C, used to transpose toward the chosen key.
 _KEY_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
-DEFAULT_DB = os.path.expanduser("~/.config/mendell/library.db")
 PATTERNS_DIR = Path(__file__).parent.parent.parent / "patterns"
+
+
+def default_db() -> str:
+    """The shared Mendell DB path (OS-appropriate; honors env overrides)."""
+    from . import library
+
+    return str(library.db_path())
 
 # General MIDI percussion notes — match what `kit load` / `midi generate` use.
 _GM = {"kick": "C2", "snare": "D2", "clap": "D#2", "hat": "F#2"}
@@ -186,9 +192,11 @@ def _add_melody_clip(project_dir, clip_name, sample_path, *, bar, pitch,
     arrangement_mod.place(project_dir, MELODY_TRACK, clip_name, bar=bar)
 
 
-def render(parent, name, *, db_path=DEFAULT_DB, tempo=None, key=None, seed=None,
+def render(parent, name, *, db_path=None, tempo=None, key=None, seed=None,
            export_format="mp3", warp=None, pattern="mutation-loop"):
     parent = Path(parent)
+    if db_path is None:
+        db_path = default_db()
     if seed is not None:
         random.seed(seed)
     tempo = float(tempo) if tempo else float(random.randint(70, 160))

@@ -1,9 +1,8 @@
 """`mendell new` / `mendell info` / `mendell set`"""
 
-from pathlib import Path
-
 import click
 
+from .. import config as config_mod
 from .. import project as project_mod
 from ..paths import resolve_project
 from ._base import command, json_option
@@ -33,14 +32,16 @@ def new(name, bpm, key, scale, sample_rate, time_sig, genre):
         if v is not None:
             kwargs[k] = v
 
-    # `name` may be a path (e.g. `mendell new /songs/my-song` or `mendell new
-    # sub/my-song`) — split it into parent dir + bare project name so the
-    # stored `project.name` is always just the directory's basename, never a
-    # path string (which would otherwise corrupt default export-path resolution).
-    target = Path.cwd() / name
-    project_dir = project_mod.create(target.parent, target.name, **kwargs)
+    # A bare NAME (no path separators) is created under the configured
+    # projects_folder; a NAME with separators or an absolute path is placed
+    # literally relative to the current directory. Either way we pass a parent
+    # dir + bare basename, so the stored `project.name` is always just the
+    # directory's basename, never a path string (which would otherwise corrupt
+    # default export-path resolution).
+    parent, base = config_mod.resolve_project_parent(name)
+    project_dir = project_mod.create(parent, base, **kwargs)
     data = project_mod.info(project_dir)
-    return data, f"created project '{target.name}' at {project_dir}"
+    return data, f"created project '{base}' at {project_dir}"
 
 
 @click.command("info")

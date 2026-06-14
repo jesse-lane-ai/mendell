@@ -1,11 +1,11 @@
 """`mendell beat new` — scaffold a ready-to-go beat project from a style preset."""
 
-from pathlib import Path
-
 import click
 
 from .. import beat as beat_mod
 from .. import beat_random32
+from .. import config as config_mod
+from .. import library as library_mod
 from ._base import command, json_option
 
 
@@ -25,8 +25,9 @@ def new(name, style):
     track routed to a sampler 'kit' track, and a looping starter drum pattern
     placed across the arrangement — ready for `mendell kit load` and `export`.
     """
-    data = beat_mod.new(Path.cwd(), name, style=style)
-    return data, f"created beat '{name}' ({style}) at {data['project']['path']}"
+    parent, base = config_mod.resolve_project_parent(name)
+    data = beat_mod.new(parent, base, style=style)
+    return data, f"created beat '{base}' ({style}) at {data['project']['path']}"
 
 
 @beat.command("make")
@@ -44,15 +45,16 @@ def new(name, style):
 @command
 def make(name, style, bpm, key, duration, variations, kit, melody, bass, export):
     """High-level command: create project, minimal kit load, generate variations, add loops, export."""
+    parent, base = config_mod.resolve_project_parent(name)
     data = beat_mod.make(
-        Path.cwd(), name,
+        parent, base,
         style=style, bpm=bpm, key=key, duration=duration,
         variations=variations, kit=kit, melody=melody, bass=bass,
         export_format=export,
     )
     out = data["export"].get("out") or data["export"].get("path")
     return data, (
-        f"made '{name}' ({style}) — {data['sections']} sections / "
+        f"made '{base}' ({style}) — {data['sections']} sections / "
         f"{data['variations']} variations @ {data['bpm']:g} BPM -> {out}"
     )
 
@@ -61,8 +63,8 @@ def make(name, style, bpm, key, duration, variations, kit, melody, bass, export)
 @click.argument("name")
 @click.option("--bpm", type=float, help="Tempo (default: random 70-160).")
 @click.option("--key", type=click.Choice(beat_random32.KEYS), help="Key (default: random A-G).")
-@click.option("--db", "db_path", default=beat_random32.DEFAULT_DB, type=click.Path(),
-              help="Sample library.db path.")
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Sample library.db path (default: the shared Mendell DB).")
 @click.option("--seed", type=int, help="Random seed for reproducible picks.")
 @click.option("--export", "export_format", default="mp3", help="Export format (mp3/wav).")
 @click.option("--warp/--no-warp", "warp", default=None,
@@ -78,12 +80,14 @@ def random32(name, bpm, key, db_path, seed, export_format, warp, pattern):
     drop-machine, verse-chorus, octave-journey, dj-intro, beat-tape, layer-stripper).
     Builds drums + bass + melody tracks, clips, a real arrangement (per-section layer
     on/off + melody treatments), then renders + exports. Warp defaults to rubberband."""
-    data = beat_random32.render(Path.cwd(), name, db_path=db_path, tempo=bpm,
+    parent, base = config_mod.resolve_project_parent(name)
+    db_path = db_path or str(library_mod.db_path())
+    data = beat_random32.render(parent, base, db_path=db_path, tempo=bpm,
                                 key=key, seed=seed, export_format=export_format, warp=warp,
                                 pattern=pattern)
     out = data["export"].get("out") or data["export"].get("path")
     return data, (
-        f"random32 '{name}' [{data['pattern']}] -> {out} | {data['tempo']:g} BPM, "
+        f"random32 '{base}' [{data['pattern']}] -> {out} | {data['tempo']:g} BPM, "
         f"key {data['key']}, 32 bars | {data['engine']} | "
         f"bass {data['bass']} | mel {data['melody']}"
     )

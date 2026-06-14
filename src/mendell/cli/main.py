@@ -2,10 +2,12 @@
 
 import click
 
+from .. import config as config_mod
 from . import arrangement as arrangement_cli
 from . import automation as automation_cli
 from . import beat as beat_cli
 from . import clips as clips_cli
+from . import config as config_cli
 from . import engine as engine_cli
 from . import kit as kit_cli
 from . import library as library_cli
@@ -22,11 +24,15 @@ from . import tracks as tracks_cli
 @click.version_option(package_name="mendell")
 def cli():
     """Mendell — agent-first music production CLI."""
+    # First-run setup: materialize config.json and create the projects folder.
+    # Best-effort — never blocks a command if the config dir isn't writable.
+    config_mod.ensure_initialized()
 
 
 cli.add_command(project_cli.new)
 cli.add_command(project_cli.info)
 cli.add_command(project_cli.set_)
+cli.add_command(config_cli.config)
 cli.add_command(timing_cli.timing)
 cli.add_command(tracks_cli.track)
 cli.add_command(clips_cli.clip)

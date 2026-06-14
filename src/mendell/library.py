@@ -48,16 +48,50 @@ _CATEGORY_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
 ]
 
 
+DB_FILENAME = "library.db"
+
+
+def _legacy_db_path() -> Path:
+    """The pre-OS-dirs hard-coded location (always ``~/.config/mendell``)."""
+    return Path.home() / ".config" / "mendell" / DB_FILENAME
+
+
 def db_path() -> Path:
     """Path to the shared user-level Mendell SQLite DB.
 
-    Holds the sample library *and* the project registry (see ``registry.py``);
+    Holds the sample library *and* the project registry (see ``registry.py``).
+    Lives in the OS-appropriate config directory (see ``config.config_dir``);
     overridable via the ``MENDELL_LIBRARY_CONFIG`` env var, primarily for tests.
+
+    The first time the resolved location differs from the old hard-coded
+    ``~/.config/mendell/library.db`` (i.e. on macOS/Windows, or Linux with a
+    custom ``XDG_CONFIG_HOME``), an existing legacy DB is migrated across so
+    users keep their library + registry.
     """
     override = os.environ.get(CONFIG_ENV_VAR)
     if override:
         return Path(override)
-    return Path.home() / ".config" / "mendell" / "library.db"
+
+    from . import config
+
+    path = config.config_dir() / DB_FILENAME
+    legacy = _legacy_db_path()
+    if path != legacy and legacy.is_file() and not path.is_file():
+        _migrate_legacy_db(legacy, path)
+    return path
+
+
+def _migrate_legacy_db(legacy: Path, dest: Path) -> None:
+    """Move a legacy DB (and its WAL/SHM siblings) to ``dest``. Best-effort: if
+    anything fails, a fresh DB is simply created at ``dest`` instead."""
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            src = legacy.with_name(legacy.name + suffix)
+            if src.is_file():
+                src.replace(dest.with_name(dest.name + suffix))
+    except OSError:
+        pass
 
 
 def _db_path() -> Path:

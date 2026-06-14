@@ -162,7 +162,45 @@ vol = 100
 limiter_ceiling = -0.3
 ```
 
+**Where projects are created.** A bare `<name>` (no path separators) is created
+under the configured **projects folder** (see the *Configuration* section) —
+e.g. `mendell new my-song` → `~/Documents/mendell/my-song`. A `<name>` containing
+path separators or an absolute path is created literally, relative to the current
+directory (`mendell new sub/my-song`, `mendell new /tmp/my-song`) — the escape
+hatch for placing a project somewhere specific. The same rule applies to
+`beat new`, `beat make`, and `beat random32`.
+
 After `mendell new`, every other command operates on the project by name (resolved from the current directory or an absolute path).
+
+### Configuration
+
+Mendell keeps a little user-level state outside any project, in an
+OS-appropriate config directory:
+
+| OS | Config directory |
+|---|---|
+| Linux / other | `$XDG_CONFIG_HOME/mendell` (default `~/.config/mendell`) |
+| macOS | `~/Library/Application Support/mendell` |
+| Windows | `%APPDATA%\mendell` |
+
+That directory holds `config.json` and the shared `library.db` (sample library +
+project registry). On first run Mendell materializes `config.json` and creates
+the **projects folder** — the default parent directory new projects are created
+under. When the `projects_folder` key is empty it resolves to an OS default
+(`~/Documents/mendell`) and is written back into `config.json`.
+
+```bash
+mendell config show              # resolved config + the paths it lives at
+mendell config path              # just the config.json location
+mendell config get projects_folder
+mendell config set projects_folder ~/beats
+```
+
+Env overrides (mainly for tests/CI/agents): `MENDELL_CONFIG_DIR` relocates the
+whole config directory; `MENDELL_PROJECTS_FOLDER` forces the projects folder for
+one invocation; `MENDELL_LIBRARY_CONFIG` points `library.db` at a specific file.
+A `library.db` found at the old hard-coded `~/.config/mendell/library.db` is
+migrated to the resolved location automatically the first time they differ.
 
 ### Quick-Start Helpers
 
@@ -247,8 +285,9 @@ that compounds. The **library** is a small global registry — independent of an
 that lets you register named external folders once and reference them by name from then on,
 from any project, forever.
 
-Registrations are stored outside any project, in a user-level config
-(`~/.config/mendell/library.toml`), so the library persists across projects and survives
+Registrations are stored outside any project, in the shared user-level SQLite DB
+(`library.db` in the OS config directory — see *Configuration*), so the library
+persists across projects and survives
 project deletion. Multiple folders can be registered side by side under distinct names —
 nothing about the design assumes a single sample root.
 
@@ -346,9 +385,10 @@ folders (local paths only).
 A global table of every project Mendell has created, with its metadata (name, genre,
 key, scale, bpm, time signature, sample rate, and `created` / `last_updated`
 timestamps). Like the sample library it lives in the shared user-level SQLite DB
-(`~/.config/mendell/library.db`, overridable via `MENDELL_LIBRARY_CONFIG`), so it spans
-projects and is queryable from anywhere. Each project's `project.toml` remains the source
-of truth — the registry is a secondary index.
+(`library.db` in the OS config directory — see *Configuration* — overridable via
+`MENDELL_LIBRARY_CONFIG`), so it spans projects and is queryable from anywhere.
+Each project's `project.toml` remains the source of truth — the registry is a
+secondary index.
 
 Rows are recorded **automatically** whenever a project is created — any creation path
 (`mendell new`, `mendell beat new`, `mendell beat random32`) funnels through the same

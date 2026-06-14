@@ -145,6 +145,12 @@ mendell kit load my-song kit ./drum-one-shots/ --json  # auto-map kick/snare/hat
 mendell export my-song --json                        # renders to my-song/export/my-song.wav
 ```
 
+A bare project name like `my-song` is created in your **projects folder**
+(`~/Documents/mendell` by default, made on first run); pass a path with
+separators (`mendell new sub/my-song` or an absolute path) to place it
+elsewhere. Manage it with `mendell config show` / `mendell config set
+projects_folder ~/beats`.
+
 No drum loops handy? Generate a pattern straight onto a track:
 
 ```bash
@@ -202,8 +208,8 @@ mendell export my-song --dry-run --json
 
 Tired of retyping paths to your sample packs? Register a folder once, by name,
 and reference it from any project from then on — Mendell remembers it globally
-(`~/.config/mendell/library.toml`), and you can register as many folders as you
-like:
+(in the shared `library.db`, in your OS config directory), and you can register
+as many folders as you like:
 
 ```bash
 mendell library add my-loops ~/Samples/lofi-loops --tags loops,lofi --json
@@ -276,5 +282,5 @@ uv run pytest tests/
 | `tests/test_beat.py` | `beat.new` / `beat.make` scaffolding, duration parsing, pattern generation, variation tiling |
 | `tests/test_durations.py` | `parse_duration_ms` / `format_duration_ms` edge cases |
 | `tests/test_library.py` | Sample library — add/scan/search/remove, BPM caching, category inference, env-var config isolation |
-
-All tests are pure unit tests (no audio rendering, no system dependencies) and run in under 20 seconds.
+| `tests/test_registry.py` | Project registry — auto-recording on create, genre, idempotent refresh, lookups, removal |
+| `tests/test_config.py` | Global config — config.json materialization, OS-aware paths, projects-folder resolution, legacy-DB migration |
