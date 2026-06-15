@@ -117,10 +117,13 @@ def test_detect_kind_from_filename():
     assert audio_analysis.detect_kind_from_filename("dark-loop.wav") == "loop"
     assert audio_analysis.detect_kind_from_filename("drumloop_90.wav") == "loop"
     assert audio_analysis.detect_kind_from_filename("snare-oneshot.wav") == "one-shot"
+    assert audio_analysis.detect_kind_from_filename("one shot perc.wav") == "one-shot"
     assert audio_analysis.detect_kind_from_filename("vocal-stab.wav") == "one-shot"
     assert audio_analysis.detect_kind_from_filename("808-hit.wav") == "one-shot"
-    # bounded matching: "hit" inside "white", "shot" inside "gunshot" don't count
+    # bounded matching: "hit" inside "white" doesn't count
     assert audio_analysis.detect_kind_from_filename("white-noise.wav") is None
+    # bare "shot" is excluded — phrase names like "BIG SHOT" are loops, not hits
+    assert audio_analysis.detect_kind_from_filename("BIG SHOT [92 BPM].wav") is None
     assert audio_analysis.detect_kind_from_filename("gunshot-fx.wav") is None
     assert audio_analysis.detect_kind_from_filename("piano-c3.wav") is None
 

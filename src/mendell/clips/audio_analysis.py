@@ -41,10 +41,11 @@ _BPM_FILENAME_RE = re.compile(r"(\d{2,3}(?:\.\d+)?)\s*[-_]?\s*bpm|bpm\s*[-_]?\s*
 _BARE_NUMBER_RE = re.compile(r"(?<![\d.])(\d{2,3})(?![\d.])")
 
 # Loop vs one-shot ("kind") from an explicit filename keyword. "loop" is matched
-# as a substring (it shows up glued into compounds like "drumloop"); the
-# one-shot tokens use boundaries so e.g. "white"/"gunshot" don't read as "hit"/
-# "shot". See `detect_kind_from_filename`.
-_ONESHOT_FILENAME_RE = re.compile(r"(?<![a-z])(?:one[\s_-]?shot|hit|stab|shot)(?![a-z])")
+# as a substring (it shows up glued into compounds like "drumloop"); the one-shot
+# tokens use word boundaries so "white" doesn't read as "hit". Bare "shot" is
+# deliberately excluded — it appears in phrase names like "BIG SHOT" that are
+# actually loops, so only the "one shot"/"oneshot" form counts as one-shot.
+_ONESHOT_FILENAME_RE = re.compile(r"(?<![a-z])(?:one[\s_-]?shot|hit|stab)(?![a-z])")
 
 
 def detect_warp_from_filename(filename: str) -> str | None:
