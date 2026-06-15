@@ -20,8 +20,8 @@ def _write_wav(path: Path, seconds: float, sr: int = 22050) -> None:
 
 @pytest.fixture
 def lib_config(tmp_path, monkeypatch):
-    """Point the library at an isolated config file for each test."""
-    config_path = tmp_path / "library.toml"
+    """Point the library at an isolated database file for each test."""
+    config_path = tmp_path / "library.db"
     monkeypatch.setenv(library.CONFIG_ENV_VAR, str(config_path))
     return config_path
 

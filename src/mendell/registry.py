@@ -1,9 +1,10 @@
 """Project registry — a global table of every Mendell project and its metadata.
 
 Like the sample library, this lives in the shared user-level SQLite DB
-(``~/.config/mendell/library.db``, overridable via ``MENDELL_LIBRARY_CONFIG``)
-so it spans projects and can be queried from anywhere. It is a *secondary
-index*: each project's ``project.toml`` on disk remains the source of truth.
+(``library.db`` in the OS config directory — see ``config.config_dir`` —
+overridable via ``MENDELL_LIBRARY_CONFIG``) so it spans projects and can be
+queried from anywhere. It is a *secondary index*: each project's
+``project.toml`` on disk remains the source of truth.
 
 A row is recorded automatically whenever a project is created (every creation
 path funnels through ``project.create``), and can be refreshed at any time with

@@ -106,11 +106,11 @@ renders and exports it. Use this when the goal is "give me a beat from my packs"
 that you can still tweak afterwards — unlike `beat make`, no loops/paths to pass.
 
 ```bash
-mendell beat random32 NAME \   # project created under ./NAME/
+mendell beat random32 NAME \   # bare NAME -> projects folder (~/Documents/mendell); a path is literal
   --pattern ARCHETYPE \  # arrangement archetype (default: mutation-loop)
   --bpm FLOAT \          # tempo (default: random 70-160)
   --key A-G \            # key (default: random A-G)
-  --db PATH \            # library.db (default: ~/.config/mendell/library.db)
+  --db PATH \            # library.db (default: the shared DB in your OS config dir)
   --seed INT \           # deterministic sample picks
   --export mp3|wav \     # export format (default: mp3)
   --warp / --no-warp \   # force warp engine (default: auto-detect rubberband)
