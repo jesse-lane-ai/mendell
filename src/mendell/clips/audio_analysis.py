@@ -113,6 +113,10 @@ class _AnalysisCache:
         self._f0: np.ndarray | None = None
         self._voiced_ratio: float | None = None
         self._chroma_energy: np.ndarray | None = None
+        self._spectral_centroid: float | None = None
+        self._spectral_rolloff: float | None = None
+        self._zcr: float | None = None
+        self._log_attack_time: float | None = None
 
     def _load(self):
         if self._y is None:
@@ -200,6 +204,43 @@ class _AnalysisCache:
         speech-relevant bands. Higher implies stronger formant structure."""
         contrast = librosa.feature.spectral_contrast(y=self.y, sr=self.sr)
         return float(np.mean(np.var(contrast, axis=1)))
+
+    def spectral_centroid(self) -> float:
+        """Mean spectral centroid in Hz — "brightness". Low for kicks/bass,
+        high for hats/cymbals."""
+        if self._spectral_centroid is None:
+            centroid = librosa.feature.spectral_centroid(y=self.y, sr=self.sr)
+            self._spectral_centroid = float(np.mean(centroid))
+        return self._spectral_centroid
+
+    def spectral_rolloff(self) -> float:
+        """Mean spectral rolloff in Hz (frequency below which 85% of the energy
+        is concentrated) — another brightness proxy, robust to single peaks."""
+        if self._spectral_rolloff is None:
+            rolloff = librosa.feature.spectral_rolloff(y=self.y, sr=self.sr)
+            self._spectral_rolloff = float(np.mean(rolloff))
+        return self._spectral_rolloff
+
+    def zero_crossing_rate(self) -> float:
+        """Mean zero-crossing rate — near-zero for low tonal sounds (kick/bass),
+        high for noisy/broadband sounds (hats/snares/claps)."""
+        if self._zcr is None:
+            zcr = librosa.feature.zero_crossing_rate(self.y)
+            self._zcr = float(np.mean(zcr))
+        return self._zcr
+
+    def log_attack_time(self) -> float:
+        """log10 of the time (seconds) from onset to the signal's peak amplitude
+        — short for percussive hits, longer for swelling/sustained sounds."""
+        if self._log_attack_time is None:
+            y = self.y
+            if len(y) == 0:
+                self._log_attack_time = -3.0
+            else:
+                peak_idx = int(np.argmax(np.abs(y)))
+                attack_seconds = max(peak_idx / float(self.sr), 1e-4)
+                self._log_attack_time = float(np.log10(attack_seconds))
+        return self._log_attack_time
 
 
 def detect_bpm_via_analysis(path: str, cache: _AnalysisCache | None = None) -> float:

@@ -1,5 +1,6 @@
 """Unit tests for the sample library registry (`mendell.library`)."""
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -329,3 +330,171 @@ def test_resolve_path_arg_passes_through_plain_paths(lib_config, sample_folder):
     library.add("drum-pack", str(sample_folder))
     assert library.resolve_path_arg("/some/literal/path.wav") == "/some/literal/path.wav"
     assert library.resolve_path_arg(None) is None
+
+
+# --- content-based recognition -----------------------------------------------
+
+from mendell.recognize.registry import _BACKENDS  # noqa: E402
+from mendell.recognize.types import FileProbe, Recognition  # noqa: E402
+
+
+class _FakeRecognizer:
+    """Records every batch it's asked to recognize and returns a canned
+    verdict per filename (looked up from ``verdicts``); files not present in
+    ``verdicts`` get ``None`` (defer to filename guess)."""
+
+    name = "fake"
+    calls: list[list[str]] = []
+    verdicts: dict[str, Recognition] = {}
+
+    def recognize(self, items: list[FileProbe]) -> list[Recognition | None]:
+        _FakeRecognizer.calls.append([item.filename for item in items])
+        return [_FakeRecognizer.verdicts.get(item.filename) for item in items]
+
+
+@pytest.fixture
+def fake_recognizer(monkeypatch):
+    """Register a controllable fake recognizer backend under the name "fake"."""
+    _FakeRecognizer.calls = []
+    _FakeRecognizer.verdicts = {}
+    monkeypatch.setitem(_BACKENDS, "fake", _FakeRecognizer)
+    return _FakeRecognizer
+
+
+def test_recognize_filename_keyword_wins_over_backend(lib_config, tmp_path, fake_recognizer):
+    folder = tmp_path / "pack"
+    _write_wav(folder / "kick-808.wav", 0.2)  # filename keyword -> "kick"
+
+    fake_recognizer.verdicts["kick-808.wav"] = Recognition(
+        category="snare", instruments=["drums"], source="fake", confidence=0.99
+    )
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder), recognize="fake")["name"])["files"]}
+    entry = f["pack/kick-808.wav"]
+    assert entry["category"] == "kick"            # filename wins
+    assert entry["category_source"] == "filename"
+    assert "category_confidence" not in entry
+    assert entry["instruments"] == ["drums"]       # instruments always come from the backend
+
+
+def test_recognize_fallback_uses_backend_category_above_threshold(lib_config, tmp_path, fake_recognizer):
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "weird-thing.wav", 0.2)  # no filename keyword -> "one-shot" fallback
+
+    fake_recognizer.verdicts["weird-thing.wav"] = Recognition(
+        category="perc", instruments=["drums", "fx"], source="fake", confidence=0.9
+    )
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder), recognize="fake")["name"])["files"]}
+    entry = f["pack/weird-thing.wav"]
+    assert entry["category"] == "perc"
+    assert entry["category_source"] == "fake"
+    assert entry["category_confidence"] == 0.9
+    assert entry["instruments"] == ["drums", "fx"]
+
+
+def test_recognize_fallback_below_threshold_keeps_default(lib_config, tmp_path, fake_recognizer):
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "weird-thing.wav", 0.2)
+
+    fake_recognizer.verdicts["weird-thing.wav"] = Recognition(
+        category="perc", instruments=[], source="fake", confidence=0.1  # below threshold
+    )
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder), recognize="fake")["name"])["files"]}
+    entry = f["pack/weird-thing.wav"]
+    assert entry["category"] == "one-shot"  # default kept
+    assert entry["category_source"] == "fallback"
+    assert "category_confidence" not in entry
+
+
+def test_recognize_none_omits_new_columns(lib_config, tmp_path, fake_recognizer):
+    """Without --recognize, the new columns are absent — unchanged behavior."""
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "kick-808.wav", 0.2)
+
+    f = {x["ref"]: x for x in library.show(library.add("pack", str(folder))["name"])["files"]}
+    entry = f["pack/kick-808.wav"]
+    assert "category_source" not in entry
+    assert "category_confidence" not in entry
+    assert "instruments" not in entry
+    assert fake_recognizer.calls == []
+
+
+def test_recognition_cache_skips_unchanged_files_on_rescan(lib_config, tmp_path, fake_recognizer):
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "weird-thing.wav", 0.2)
+    _write_wav(folder / "other.wav", 0.2)
+
+    fake_recognizer.verdicts["weird-thing.wav"] = Recognition(category="perc", instruments=["drums"], source="fake", confidence=0.9)
+    fake_recognizer.verdicts["other.wav"] = Recognition(category="fx", instruments=[], source="fake", confidence=0.9)
+
+    library.add("pack", str(folder), recognize="fake")
+    assert sorted(fake_recognizer.calls[0]) == ["other.wav", "weird-thing.wav"]
+
+    # Re-scan with nothing changed — neither file should be re-recognized.
+    fake_recognizer.calls.clear()
+    library.scan("pack", recognize="fake")
+    assert fake_recognizer.calls == []
+
+    # Verdicts persist from the cache.
+    f = {x["ref"]: x for x in library.show("pack")["files"]}
+    assert f["pack/weird-thing.wav"]["category"] == "perc"
+    assert f["pack/weird-thing.wav"]["instruments"] == ["drums"]
+
+    # Touch one file -> only that file is re-recognized on the next scan.
+    fake_recognizer.calls.clear()
+    target = folder / "weird-thing.wav"
+    new_mtime = target.stat().st_mtime + 5
+    os.utime(target, (new_mtime, new_mtime))
+    library.scan("pack", recognize="fake")
+    assert fake_recognizer.calls == [["weird-thing.wav"]]
+
+
+def test_search_by_instrument(lib_config, tmp_path, fake_recognizer):
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "weird-thing.wav", 0.2)
+    _write_wav(folder / "other-thing.wav", 0.2)
+
+    fake_recognizer.verdicts["weird-thing.wav"] = Recognition(category="full", instruments=["piano", "strings"], source="fake", confidence=0.9)
+    fake_recognizer.verdicts["other-thing.wav"] = Recognition(category="full", instruments=["bass"], source="fake", confidence=0.9)
+
+    library.add("pack", str(folder), recognize="fake")
+
+    assert [m["ref"] for m in library.search(instrument="piano")["matches"]] == ["pack/weird-thing.wav"]
+    assert [m["ref"] for m in library.search(instrument="bass")["matches"]] == ["pack/other-thing.wav"]
+    assert library.search(instrument="guitar")["matches"] == []
+
+
+def test_recognize_unavailable_backend_raises_actionable_error(lib_config, tmp_path):
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "kick.wav", 0.2)
+
+    with pytest.raises(BadInputError, match=r"pip install 'mendell\[clap\]'"):
+        library.add("pack", str(folder), recognize="clap")
+
+
+def test_migration_adds_recognition_columns_to_existing_db(lib_config, tmp_path, sample_folder):
+    """A library written before this feature (no recognition columns/cache
+    table) still opens and indexes fine — `_migrate`'s ALTER TABLEs backfill
+    the schema idempotently."""
+    library.add("drum-pack", str(sample_folder))
+
+    # Simulate a pre-existing DB by dropping the new columns/table and
+    # re-opening — `_conn()` runs `_migrate` on every connection.
+    import sqlite3
+    con = sqlite3.connect(lib_config)
+    con.execute("DROP TABLE recognition_cache")
+    con.commit()
+    con.close()
+
+    # Re-scanning (which reopens the connection and re-migrates) should work.
+    library.scan("drum-pack")
+    files = library.show("drum-pack")["files"]
+    assert len(files) == 3

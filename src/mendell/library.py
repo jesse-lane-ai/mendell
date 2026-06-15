@@ -18,11 +18,14 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import sampler as sampler_mod
 from .clips import audio_analysis
 from .errors import BadInputError, NotFoundError
+
+if TYPE_CHECKING:
+    from .recognize import Recognition
 
 AUDIO_EXTS = sampler_mod.AUDIO_EXTS
 
@@ -165,6 +168,27 @@ def _migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "files", "duration", "REAL")
     con.execute("CREATE INDEX IF NOT EXISTS idx_files_kind ON files(kind)")
 
+    # Content-recognition columns (pluggable recognizer backends — see
+    # recognize/). `instruments` is comma-joined, like `tags`.
+    _add_column_if_missing(con, "files", "instruments", "TEXT")
+    _add_column_if_missing(con, "files", "category_source", "TEXT")
+    _add_column_if_missing(con, "files", "category_confidence", "REAL")
+
+    # Recognition cache, keyed by (library, rel_path, mtime) — lets re-scans
+    # skip re-recognizing unchanged files (content backends can be slow/billed).
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS recognition_cache (
+            library_name TEXT NOT NULL,
+            rel_path     TEXT NOT NULL,
+            mtime         REAL NOT NULL,
+            backend       TEXT NOT NULL,
+            category      TEXT NOT NULL,
+            instruments   TEXT NOT NULL DEFAULT '',
+            confidence    REAL NOT NULL,
+            PRIMARY KEY (library_name, rel_path, backend)
+        );
+    """)
+
 
 # ---------------------------------------------------------------------------
 # internal helpers
@@ -222,25 +246,177 @@ def _detect_kind(
     return "unknown", None
 
 
-def _index_folder(folder: Path, *, analyze: bool = False) -> list[dict[str, Any]]:
-    indexed = []
-    for file_path in _scan_folder(folder):
-        category = guess_category(file_path)
+# A recognizer's coarse category is only trusted on the filename-fallback
+# path, and only at or above this confidence — below it we keep the filename
+# default ("one-shot") rather than substitute a low-confidence guess.
+RECOGNITION_CONFIDENCE_THRESHOLD = 0.5
+
+
+def _fuse_category(
+    filename_category: str, filename_source: str, recognition: Recognition | None
+) -> tuple[str, str, float | None]:
+    """Combine the filename keyword guess with a recognizer's verdict.
+
+    Filename wins outright when it matched a real keyword (cheap + usually
+    right). On the fallback path (filename guessed the default), use the
+    recognizer's category if its confidence clears
+    ``RECOGNITION_CONFIDENCE_THRESHOLD``; otherwise keep the filename default.
+
+    Returns ``(category, category_source, category_confidence)`` —
+    ``category_confidence`` is ``None`` when no recognizer ran or it deferred.
+    """
+    if filename_source == "filename":
+        return filename_category, "filename", None
+    if recognition is not None and recognition.confidence >= RECOGNITION_CONFIDENCE_THRESHOLD:
+        return recognition.category, recognition.source, recognition.confidence
+    return filename_category, "fallback", None
+
+
+def _load_recognition_cache(con: sqlite3.Connection, library_name: str, backend: str) -> dict[str, sqlite3.Row]:
+    """``rel_path -> cached row`` for ``backend``, keyed for an O(1) per-file lookup."""
+    rows = con.execute(
+        "SELECT * FROM recognition_cache WHERE library_name = ? AND backend = ?",
+        (library_name, backend),
+    ).fetchall()
+    return {row["rel_path"]: row for row in rows}
+
+
+def _write_recognition_cache(con: sqlite3.Connection, library_name: str, backend: str, entries: list[dict[str, Any]]) -> None:
+    """Replace the cached recognition rows for ``backend`` with ``entries``
+    (each carrying ``rel_path``, ``mtime``, ``category``, ``instruments``,
+    ``confidence``). Other backends' cache rows are left untouched."""
+    con.execute("DELETE FROM recognition_cache WHERE library_name = ? AND backend = ?", (library_name, backend))
+    con.executemany(
+        "INSERT INTO recognition_cache (library_name, rel_path, mtime, backend, category, instruments, confidence) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [
+            (library_name, e["rel_path"], e["mtime"], backend, e["category"], ",".join(e["instruments"]), e["confidence"])
+            for e in entries
+        ],
+    )
+
+
+def _index_folder(
+    folder: Path, *, analyze: bool = False, recognize: str | None = None,
+    con: sqlite3.Connection | None = None, library_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """Walk ``folder`` and build the per-file index.
+
+    ``recognize``, when given, names a recognizer backend (see
+    ``recognize.registry``) run on every file in a single batch — its
+    ``category``/``instruments`` are fused with the filename guess (see
+    ``_fuse_category``). Like ``analyze``, recognition loads audio; the two
+    share one ``_AnalysisCache`` per file when ``recognize == "heuristic"``.
+
+    ``con``/``library_name``, when both given, enable the recognition cache
+    (``recognition_cache`` table) keyed by ``(library, rel_path, mtime)`` —
+    unchanged files reuse their prior verdict instead of being re-recognized,
+    so re-scans with a cloud backend don't re-bill for stable files.
+    """
+    files = _scan_folder(folder)
+
+    # Filename-only pass first — cheap, always runs, and gives the recognizer
+    # the `kind` it needs to pick the right label vocabulary.
+    base: list[dict[str, Any]] = []
+    caches: dict[str, audio_analysis._AnalysisCache] = {}
+    for file_path in files:
+        category, category_source = _guess_category_with_source(file_path)
         bpm, bpm_source = _detect_bpm(file_path, category, analyze=analyze)
         duration = audio_analysis.probe_duration_seconds(str(file_path))
         kind, kind_source = _detect_kind(file_path, category, bpm, duration)
+        try:
+            mtime = file_path.stat().st_mtime
+        except OSError:
+            mtime = None
+        base.append({
+            "file_path": file_path,
+            "category": category,
+            "category_source": category_source,
+            "bpm": bpm,
+            "bpm_source": bpm_source,
+            "duration": duration,
+            "kind": kind,
+            "kind_source": kind_source,
+            "mtime": mtime,
+        })
+
+    recognitions: list[Recognition | None] = [None] * len(files)
+    if recognize is not None:
+        from .recognize import FileProbe, Recognition as _Recognition, get_recognizer
+        from .recognize.heuristic import HeuristicRecognizer
+
+        cached_by_rel: dict[str, sqlite3.Row] = {}
+        if con is not None and library_name is not None:
+            cached_by_rel = _load_recognition_cache(con, library_name, recognize)
+
+        # Only files whose cache entry is missing or stale (mtime changed)
+        # actually need (re-)recognition.
+        to_recognize_idx: list[int] = []
+        for i, item in enumerate(base):
+            rel = str(item["file_path"].relative_to(folder))
+            cached = cached_by_rel.get(rel)
+            if cached is not None and item["mtime"] is not None and cached["mtime"] == item["mtime"]:
+                instruments = [t for t in cached["instruments"].split(",") if t]
+                recognitions[i] = _Recognition(
+                    category=cached["category"], instruments=instruments,
+                    source=recognize, confidence=cached["confidence"],
+                )
+            else:
+                to_recognize_idx.append(i)
+
+        if to_recognize_idx:
+            if recognize == "heuristic":
+                recognizer = HeuristicRecognizer(cache_provider=lambda p: caches.setdefault(p, audio_analysis._AnalysisCache(p)))
+            else:
+                recognizer = get_recognizer(recognize)
+
+            probes = [
+                FileProbe(path=base[i]["file_path"], filename=base[i]["file_path"].name, duration=base[i]["duration"], kind=base[i]["kind"])
+                for i in to_recognize_idx
+            ]
+            fresh = recognizer.recognize(probes)
+            for i, recognition in zip(to_recognize_idx, fresh):
+                recognitions[i] = recognition
+
+        if con is not None and library_name is not None:
+            cache_entries = []
+            for item, recognition in zip(base, recognitions):
+                if recognition is None or item["mtime"] is None:
+                    continue
+                rel = str(item["file_path"].relative_to(folder))
+                cache_entries.append({
+                    "rel_path": rel, "mtime": item["mtime"], "category": recognition.category,
+                    "instruments": recognition.instruments, "confidence": recognition.confidence,
+                })
+            _write_recognition_cache(con, library_name, recognize, cache_entries)
+
+    indexed = []
+    for item, recognition in zip(base, recognitions):
+        file_path = item["file_path"]
+        if recognize is not None:
+            category, category_source, category_confidence = _fuse_category(
+                item["category"], item["category_source"], recognition
+            )
+        else:
+            category, category_source, category_confidence = item["category"], None, None
         entry: dict[str, Any] = {
             "path": str(file_path.relative_to(folder)),
             "category": category,
-            "kind": kind,
+            "kind": item["kind"],
         }
-        if bpm is not None:
-            entry["bpm"] = bpm
-            entry["bpm_source"] = bpm_source
-        if kind_source is not None:
-            entry["kind_source"] = kind_source
-        if duration is not None:
-            entry["duration"] = duration
+        if item["bpm"] is not None:
+            entry["bpm"] = item["bpm"]
+            entry["bpm_source"] = item["bpm_source"]
+        if item["kind_source"] is not None:
+            entry["kind_source"] = item["kind_source"]
+        if item["duration"] is not None:
+            entry["duration"] = item["duration"]
+        if category_source is not None:
+            entry["category_source"] = category_source
+        if category_confidence is not None:
+            entry["category_confidence"] = category_confidence
+        if recognition is not None:
+            entry["instruments"] = recognition.instruments
         indexed.append(entry)
     return indexed
 
@@ -256,12 +432,15 @@ def _write_files(con: sqlite3.Connection, name: str, indexed: list[dict[str, Any
     con.execute("DELETE FROM files WHERE library_name = ?", (name,))
     con.executemany(
         "INSERT INTO files "
-        "(library_name, rel_path, category, bpm, bpm_source, kind, kind_source, duration) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        "(library_name, rel_path, category, bpm, bpm_source, kind, kind_source, duration, "
+        "instruments, category_source, category_confidence) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         [
             (
                 name, f["path"], f["category"], f.get("bpm"), f.get("bpm_source"),
                 f.get("kind"), f.get("kind_source"), f.get("duration"),
+                ",".join(f["instruments"]) if "instruments" in f else None,
+                f.get("category_source"), f.get("category_confidence"),
             )
             for f in indexed
         ],
@@ -279,10 +458,11 @@ def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _add_file_metadata(summary: dict[str, Any], row: sqlite3.Row) -> dict[str, Any]:
-    """Attach the optional per-file metadata (bpm/kind/duration) to ``summary``,
-    omitting whatever a row doesn't carry — shared by ``show`` and ``search`` so
-    a file looks the same however you reach it. ``kind`` may be absent on rows
-    indexed before the loop/one-shot feature, until the folder is re-scanned."""
+    """Attach the optional per-file metadata (bpm/kind/duration/instruments/...)
+    to ``summary``, omitting whatever a row doesn't carry — shared by ``show``
+    and ``search`` so a file looks the same however you reach it. Several
+    fields may be absent on rows indexed before the corresponding feature,
+    until the folder is re-scanned."""
     if row["bpm"] is not None:
         summary["bpm"] = row["bpm"]
         summary["bpm_source"] = row["bpm_source"]
@@ -292,6 +472,12 @@ def _add_file_metadata(summary: dict[str, Any], row: sqlite3.Row) -> dict[str, A
         summary["kind_source"] = row["kind_source"]
     if row["duration"] is not None:
         summary["duration"] = round(row["duration"], 3)
+    if row["instruments"] is not None and row["instruments"] != "":
+        summary["instruments"] = [t for t in row["instruments"].split(",") if t]
+    if row["category_source"] is not None:
+        summary["category_source"] = row["category_source"]
+    if row["category_confidence"] is not None:
+        summary["category_confidence"] = row["category_confidence"]
     return summary
 
 
@@ -303,29 +489,40 @@ def _file_row_to_summary(library_name: str, row: sqlite3.Row) -> dict[str, Any]:
     return _add_file_metadata(summary, row)
 
 
-def guess_category(file_path: Path) -> str:
-    """Best-effort category guess from filename (then parent-folder) keywords."""
+def _guess_category_with_source(file_path: Path) -> tuple[str, str]:
+    """Like ``guess_category``, but also reports whether a real keyword
+    matched (``"filename"``) or the default fell through (``"fallback"``) —
+    drives the filename-vs-recognizer fusion in ``_index_folder``."""
     for haystack in (file_path.stem.lower(), file_path.parent.name.lower()):
         for keywords, category in _CATEGORY_KEYWORDS:
             if any(kw in haystack for kw in keywords):
-                return category
-    return "one-shot"
+                return category, "filename"
+    return "one-shot", "fallback"
+
+
+def guess_category(file_path: Path) -> str:
+    """Best-effort category guess from filename (then parent-folder) keywords."""
+    category, _source = _guess_category_with_source(file_path)
+    return category
 
 
 # ---------------------------------------------------------------------------
 # registry management
 # ---------------------------------------------------------------------------
 
-def add(name: str, path: str, *, tags: list[str] | None = None, analyze: bool = False) -> dict[str, Any]:
+def add(
+    name: str, path: str, *, tags: list[str] | None = None, analyze: bool = False,
+    recognize: str | None = None,
+) -> dict[str, Any]:
     folder = Path(path).expanduser().resolve()
     if not folder.is_dir():
         raise BadInputError(f"folder not found: {path}")
 
-    indexed = _index_folder(folder, analyze=analyze)
     tag_str = ",".join(tags or [])
     now = time.time()
 
     with _conn() as con:
+        indexed = _index_folder(folder, analyze=analyze, recognize=recognize, con=con, library_name=name)
         con.execute(
             """
             INSERT INTO libraries (name, path, tags, file_count, last_scanned)
@@ -356,7 +553,7 @@ def list_entries() -> dict[str, Any]:
         return {"libraries": [_row_to_summary(r) for r in rows]}
 
 
-def scan(name: str | None = None, *, analyze: bool = False) -> dict[str, Any]:
+def scan(name: str | None = None, *, analyze: bool = False, recognize: str | None = None) -> dict[str, Any]:
     with _conn() as con:
         if name is not None:
             targets = [_require_library(con, name)]
@@ -373,7 +570,7 @@ def scan(name: str | None = None, *, analyze: bool = False) -> dict[str, Any]:
                 raise BadInputError(
                     f"library '{row['name']}' folder no longer exists: {row['path']}"
                 )
-            indexed = _index_folder(folder, analyze=analyze)
+            indexed = _index_folder(folder, analyze=analyze, recognize=recognize, con=con, library_name=row["name"])
             _write_files(con, row["name"], indexed)
             con.execute(
                 "UPDATE libraries SET file_count = ?, last_scanned = ? WHERE name = ?",
@@ -404,6 +601,7 @@ def search(
     category: str | None = None,
     bpm: float | None = None,
     kind: str | None = None,
+    instrument: str | None = None,
 ) -> dict[str, Any]:
     with _conn() as con:
         if library is not None:
@@ -431,6 +629,13 @@ def search(
             clauses.append("f.kind = ?")
             params.append(kind)
 
+        if instrument is not None:
+            # instruments stored as comma-separated string — match whole token
+            clauses.append(
+                "((',' || f.instruments || ',') LIKE ?)"
+            )
+            params.append(f"%,{instrument},%")
+
         if bpm is not None:
             clauses.append("f.bpm IS NOT NULL AND ABS(f.bpm - ?) <= ?")
             params.extend([bpm, BPM_TOLERANCE])
@@ -442,7 +647,8 @@ def search(
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
             SELECT f.library_name, f.rel_path, f.category, f.bpm, f.bpm_source,
-                   f.kind, f.kind_source, f.duration, l.tags
+                   f.kind, f.kind_source, f.duration, f.instruments,
+                   f.category_source, f.category_confidence, l.tags
             FROM files f
             JOIN libraries l ON l.name = f.library_name
             {where}

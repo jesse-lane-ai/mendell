@@ -14,6 +14,21 @@ dependencies = [
     "pyrubberband>=0.3",
 ]
 
+[project.optional-dependencies]
+# `library add/scan --recognize clap` — local zero-shot audio-text embedding.
+# laion-clap pulls in torch (CPU wheel is large but avoids a GPU requirement);
+# an onnxruntime-based CLAP export would be lighter but isn't packaged on PyPI
+# as a drop-in, so this stays the documented path until one is.
+clap = [
+    "torch>=2.0",
+    "laion-clap>=1.1",
+]
+# `library add/scan --recognize gemini-embedding|gemini-generative` — cloud
+# recognition via the Gemini API. Needs GEMINI_API_KEY/GOOGLE_API_KEY at runtime.
+gemini = [
+    "google-genai>=0.3",
+]
+
 [project.scripts]
 mendell = "mendell.cli.main:cli"
 

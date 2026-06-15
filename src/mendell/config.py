@@ -32,9 +32,13 @@ PROJECTS_FOLDER_ENV_VAR = "MENDELL_PROJECTS_FOLDER"
 CONFIG_FILENAME = "config.json"
 
 # Schema for config.json. An empty ``projects_folder`` means "resolve to the
-# OS default on first use" (see :func:`projects_folder`).
+# OS default on first use" (see :func:`projects_folder`). ``library.recognizer``
+# is the default content-recognition backend for `library add`/`library scan`
+# when neither command passes `--recognize`; empty means recognition is off
+# (filename-only, today's behavior).
 DEFAULTS: dict[str, Any] = {
     "projects_folder": "",
+    "library": {"recognizer": ""},
 }
 
 
@@ -123,6 +127,25 @@ def set_value(key: str, value: Any) -> dict[str, Any]:
     """Set a config key and persist. Returns the full updated config."""
     data = load()
     data[key] = value
+    _write(data)
+    return data
+
+
+def library_recognizer_default() -> str | None:
+    """The configured default content-recognition backend for ``library
+    add``/``library scan`` (``library.recognizer`` in config.json), or
+    ``None`` when unset/empty — meaning recognition stays off (filename-only)."""
+    library_cfg = get("library") or {}
+    value = str(library_cfg.get("recognizer", "")).strip()
+    return value or None
+
+
+def set_library_recognizer(value: str) -> dict[str, Any]:
+    """Set the default ``library.recognizer`` backend (empty string = off)."""
+    data = load()
+    library_cfg = dict(data.get("library") or {})
+    library_cfg["recognizer"] = value
+    data["library"] = library_cfg
     _write(data)
     return data
 
