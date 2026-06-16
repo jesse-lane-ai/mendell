@@ -26,6 +26,21 @@ def resolve_project(name_or_path: str) -> Path:
     if (cwd / PROJECT_FILE).is_file() and cwd.name == name_or_path:
         return cwd.resolve()
 
+    # Fall back to the project registry, a secondary index that lets a bare
+    # name resolve from any working directory. Lazy-imported: registry
+    # imports this module, so a module-level import would cycle.
+    from . import registry
+
+    registered = registry.lookup_path(name_or_path)
+    if registered is not None:
+        if (registered / PROJECT_FILE).is_file():
+            return registered.resolve()
+        raise NotFoundError(
+            f"project '{name_or_path}' is registered at {registered} but "
+            f"{PROJECT_FILE} is missing there; run "
+            f"'mendell projects remove {name_or_path}' to clear the stale entry"
+        )
+
     raise NotFoundError(f"project '{name_or_path}' not found")
 
 

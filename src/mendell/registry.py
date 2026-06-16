@@ -110,10 +110,7 @@ def _find_rows(con: sqlite3.Connection, identifier: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _require_one(con: sqlite3.Connection, identifier: str) -> sqlite3.Row:
-    rows = _find_rows(con, identifier)
-    if not rows:
-        raise NotFoundError(f"project '{identifier}' not in registry")
+def _one_or_raise(rows: list[sqlite3.Row], identifier: str) -> sqlite3.Row:
     if len(rows) > 1:
         paths_list = ", ".join(r["path"] for r in rows)
         raise BadInputError(
@@ -121,6 +118,13 @@ def _require_one(con: sqlite3.Connection, identifier: str) -> sqlite3.Row:
             "use the full path to disambiguate"
         )
     return rows[0]
+
+
+def _require_one(con: sqlite3.Connection, identifier: str) -> sqlite3.Row:
+    rows = _find_rows(con, identifier)
+    if not rows:
+        raise NotFoundError(f"project '{identifier}' not in registry")
+    return _one_or_raise(rows, identifier)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +180,20 @@ def record_safe(project_dir: Path, *, genre: str | None = None) -> dict[str, Any
         return record(project_dir, genre=genre)
     except Exception:
         return None
+
+
+def lookup_path(identifier: str) -> Path | None:
+    """Look up a project's directory by name or path, for use by `paths.resolve_project`.
+
+    Returns ``None`` if nothing matches (the caller falls back to its own
+    not-found handling). Raises :class:`BadInputError` if ``identifier`` is a
+    name shared by multiple registered projects, same as :func:`show`.
+    """
+    with _conn() as con:
+        rows = _find_rows(con, identifier)
+        if not rows:
+            return None
+        return Path(_one_or_raise(rows, identifier)["path"])
 
 
 def list_projects() -> dict[str, Any]:
