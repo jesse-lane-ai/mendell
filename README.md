@@ -64,7 +64,11 @@ mendell --help
 
 `library add` / `library scan --recognize <backend>` can categorize samples by their
 audio content (see [Sample library](#sample-library)). The default `heuristic` backend
-is built in and needs nothing extra. The higher-accuracy backends are optional installs:
+is built in and needs nothing extra. The higher-accuracy backends are optional installs.
+
+Run these from the cloned repo directory with your virtual environment activated
+(same place you ran `pip install -e .` above) — the `.[extra]` syntax installs the
+optional extras against the local checkout:
 
 ```bash
 # Local CLAP backend (--recognize clap) — pulls in torch + laion-clap (large download):
