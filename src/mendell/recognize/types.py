@@ -27,8 +27,20 @@ LOOP_CATEGORIES: tuple[str, ...] = (
 )
 
 # Multi-valued instrument vocabulary — shared across one-shots and loops.
+# Drum-kit and hand-percussion labels come first so percussion-heavy packs get
+# specific instrument tags (kick/snare/conga/shaker/...) instead of collapsing
+# to a bare "drums"; melodic instruments follow for non-percussion libraries.
 INSTRUMENT_VOCAB: tuple[str, ...] = (
-    "drums", "bass", "piano", "keys", "guitar", "strings", "brass", "synth",
+    # drum kit
+    "kick", "snare", "clap", "snap", "rimshot", "hihat", "open hat",
+    "crash", "ride", "cymbal", "tom",
+    # hand / world percussion
+    "conga", "bongo", "shaker", "tambourine", "cowbell", "woodblock",
+    "clave", "triangle", "djembe", "timbale", "agogo", "cabasa",
+    # generic fallbacks
+    "drums", "percussion",
+    # melodic / other
+    "bass", "808", "piano", "keys", "guitar", "strings", "brass", "synth",
     "vocal", "fx",
 )
 
