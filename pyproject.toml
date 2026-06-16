@@ -21,6 +21,10 @@ dependencies = [
 # as a drop-in, so this stays the documented path until one is.
 clap = [
     "torch>=2.0",
+    # laion-clap imports torchaudio (mel-spectrogram extraction) and torchvision
+    # at runtime but doesn't declare them, so pin them into the extra directly.
+    "torchaudio>=2.0",
+    "torchvision>=0.15",
     "laion-clap>=1.1",
 ]
 # `library add/scan --recognize gemini-embedding|gemini-generative` — cloud
