@@ -31,6 +31,12 @@ for an architecture overview.
   missing binary as soon as it encounters a warped clip — everything else
   (MIDI/sampler synthesis, unwarped audio, mixing, FX, automation, export)
   works fine.
+- **`ffmpeg`** — only needed for `beat random32`, which decodes audio from
+  your sample library. Everything else works without it.
+  - Debian/Ubuntu: `sudo apt install ffmpeg`
+  - macOS (Homebrew): `brew install ffmpeg`
+  - Arch: `sudo pacman -S ffmpeg`
+  - Windows: see the [Windows](#windows) section below
 
 ## Install
 
