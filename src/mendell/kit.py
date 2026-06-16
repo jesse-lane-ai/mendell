@@ -25,7 +25,7 @@ DEFAULT_START_NOTE = "C5"
 # General MIDI percussion key map (channel 10) — first matching keyword wins,
 # so more specific names (closed/open hat) must precede generic ones (hat).
 _GM_DRUM_KEYWORDS: list[tuple[tuple[str, ...], int]] = [
-    (("kick", "bd", "bassdrum", "bass_drum", "bass-drum", "kik", "808"), 36),   # Bass Drum 1
+    (("kick", "bd", "kd", "bassdrum", "bass_drum", "bass-drum", "kik", "808"), 36),  # Bass Drum 1
     (("rim", "rimshot", "rim_shot", "sidestick", "side_stick", "side-stick"), 37),  # Side Stick
     (("snare", "sd", "snr"), 38),                                               # Acoustic Snare
     (("clap", "clp"), 39),                                                      # Hand Clap
@@ -33,9 +33,9 @@ _GM_DRUM_KEYWORDS: list[tuple[tuple[str, ...], int]] = [
     (("openhat", "open_hat", "open-hat", "hatopen", "hat_open", "hat-open", "ohh"), 46),              # Open Hi-Hat
     (("hat", "hh", "hihat", "hi-hat", "hi_hat"), 42),                           # generic -> closed hat
     (("tom",), 45),                                                             # Low Tom
-    (("crash",), 49),                                                           # Crash Cymbal 1
+    (("crash", "cym", "cymbal"), 49),                                           # Crash Cymbal 1
     (("ride",), 51),                                                            # Ride Cymbal 1
-    (("perc", "shaker", "tamb", "cowbell", "conga", "bongo", "clave"), 54),     # Tambourine
+    (("perc", "prc", "shaker", "tamb", "cowbell", "conga", "bongo", "clave"), 54),  # Tambourine
 ]
 
 
