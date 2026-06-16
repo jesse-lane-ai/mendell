@@ -170,7 +170,13 @@ directory (`mendell new sub/my-song`, `mendell new /tmp/my-song`) — the escape
 hatch for placing a project somewhere specific. The same rule applies to
 `beat new`, `beat make`, and `beat random32`.
 
-After `mendell new`, every other command operates on the project by name (resolved from the current directory or an absolute path).
+After `mendell new`, every other command operates on the project by name. Resolution
+checks the filesystem first — a relative or absolute path, or a bare name in (or matching)
+the current directory — then falls back to the **Project Registry** (see that section), so
+a bare `<name>` resolves from *any* working directory, not just the project's parent. A
+name shared by two registered projects is ambiguous and must be addressed by full path; a
+registry entry whose `project.toml` has since moved is reported as a stale entry (with a
+hint to clear it) rather than silently resolving to a dead path.
 
 ### Configuration
 
@@ -296,14 +302,14 @@ nothing about the design assumes a single sample root.
 # anything — the library only ever stores paths + metadata, never sample audio itself.
 # Indexes every file once: guesses category (kick/snare/hat/loop/...) and BPM from
 # its filename, and caches both — see "Indexing & BPM detection" below.
-mendell library add <name> <path> [--tags drums,lofi,kicks] [--analyze] [--json]
+mendell library add <name> <path> [--tags drums,lofi,kicks] [--analyze] [--recognize heuristic|clap|gemini-embedding|gemini-generative] [--json]
 
 # List every registered folder (name, path, tags, file count, last-scanned time)
 mendell library list [--json]
 
 # Re-scan a folder (or all of them) — picks up files added/removed since registration
 # and rebuilds the cached category/BPM index
-mendell library scan [<name>] [--analyze] [--json]
+mendell library scan [<name>] [--analyze] [--recognize heuristic|clap|gemini-embedding|gemini-generative] [--json]
 
 # Inspect one registered folder — full file listing with detected category and
 # (where known) BPM per file, as ready-to-use refs
@@ -312,13 +318,13 @@ mendell library show <name> [--json]
 # Search across all registered folders (or scope to one with --library) by filename
 # keyword, tag, category, kind, and/or BPM (±2 BPM tolerance) — the building block
 # agents use to find material without knowing any paths up front
-mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--kind loop|one-shot|unknown] [--bpm <n>] [--json]
+mendell library search <query> [--library <name>] [--tag <tag>] [--category kick|snare|loop|...] [--kind loop|one-shot|unknown] [--instrument <name>] [--bpm <n>] [--json]
 
 # Unregister (does not touch the folder or its files on disk)
 mendell library remove <name>
 ```
 
-### Indexing, BPM & Kind Detection
+### Indexing, BPM, Kind & Recognition
 
 `library add`/`library scan` walk the registered folder once and cache, per file,
 the same things `kit load` and `clip import` already derive — a **category** guess
@@ -358,12 +364,43 @@ fired):
 Files with an unreadable header (corrupt/placeholder) simply omit `duration` and
 fall back to the keyword/category rules.
 
+**Content recognition — `category` + `instruments` from the audio.** By default
+`category` is guessed from filename/folder keywords (instant). Pass `--recognize <backend>`
+(or set a default with `mendell config set library.recognizer <backend>`) to additionally
+*listen* to each file. Recognition is fused with the filename guess, most-confident-wins: a
+specific filename keyword still wins (`category_source: "filename"`); otherwise the backend
+supplies the coarse `category` (`category_source` = the backend name, plus a
+`category_confidence`), and it always adds a multi-valued **`instruments`** list — the
+second taxonomy tier, orthogonal to `category`/`kind`. A one-shot usually has 0–1
+instruments; a loop can have several (a melodic loop → `["piano", "strings"]`; a
+full/construction loop → `["drums", "bass", "keys"]`). `search --instrument <name>` matches
+any file whose list contains that token (whole-token match, like `--tag`).
+
+Four backends trade accuracy for weight, all behind the one `--recognize` flag:
+
+- **`heuristic`** *(local, zero new deps)* — a spectral-feature classifier reusing the same
+  signal analysis as warp detection. Fills the coarse `category` only; does not enumerate
+  instruments.
+- **`clap`** *(local, opt-in: `pip install 'mendell[clap]'`)* — CLAP audio↔text embeddings,
+  zero-shot against the category/instrument vocabulary; coarse `category` **and** multi-label
+  `instruments`.
+- **`gemini-embedding`** *(cloud, opt-in: `pip install 'mendell[gemini]'` + a `GEMINI_API_KEY`
+  / `GOOGLE_API_KEY` env var)* — the same embedding mechanic via Gemini Embedding.
+- **`gemini-generative`** *(cloud, same dep + key)* — prompts the Gemini multimodal model for
+  an instrument list directly; strongest on dense mixes (`category_confidence` is
+  presence/absence, ~1.0).
+
+Recognition results are **cached per file**, keyed by path + modification time, so a re-scan
+only re-runs a backend on files that were added or changed — unchanged files are never
+re-analyzed (and a cloud backend is never re-billed for them). A missing optional dependency
+or API key surfaces as an actionable error naming the exact `pip install` / env-var fix.
+
 ```bash
-mendell library search "808" --bpm 90 --kind loop --json
+mendell library search "808" --bpm 90 --kind loop --instrument 808 --json
 ```
 ```json
 { "ok": true, "data": { "matches": [
-  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "loop", "kind": "loop", "kind_source": "filename", "bpm": 90.0, "bpm_source": "filename", "duration": 3.556, "tags": ["drums", "lofi"] }
+  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "bass", "category_source": "gemini-generative", "category_confidence": 1.0, "instruments": ["808"], "kind": "loop", "kind_source": "filename", "bpm": 90.0, "bpm_source": "filename", "duration": 3.556, "tags": ["drums", "lofi"] }
 ] } }
 ```
 
@@ -415,6 +452,11 @@ Rows are recorded **automatically** whenever a project is created — any creati
 seam. `beat new` records its `--style` as the genre; `mendell new` accepts an optional
 `--genre`. Entries are keyed by absolute project directory, so two projects that share a
 `name` never collide (address those by full path).
+
+This index is also what lets every command resolve a project by a bare `<name>` from any
+working directory: project resolution tries the filesystem first, then falls back to this
+registry — a single match wins, a shared name is ambiguous (use the full path), and a
+project that has moved away from its recorded path reports a stale-entry error.
 
 ```bash
 # List every recorded project, most-recently-updated first

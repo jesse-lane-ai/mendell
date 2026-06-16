@@ -54,6 +54,29 @@ Verify the install:
 mendell --help
 ```
 
+### Optional: sound-recognition backends
+
+`library add` / `library scan --recognize <backend>` can categorize samples by their
+audio content (see [Sample library](#sample-library)). The default `heuristic` backend
+is built in and needs nothing extra. The higher-accuracy backends are optional installs:
+
+```bash
+# Local CLAP backend (--recognize clap) — pulls in torch + laion-clap (large download):
+pip install -e '.[clap]'
+
+# Cloud Gemini backends (--recognize gemini-embedding | gemini-generative):
+pip install -e '.[gemini]'
+export GEMINI_API_KEY=...        # or GOOGLE_API_KEY — read at runtime
+
+# ...or both at once:
+pip install -e '.[clap,gemini]'
+```
+
+Each backend is lazy-loaded, so a missing package or API key only errors when you
+actually select that backend — with a message naming the exact `pip install` / env-var
+fix. Once installed, set a default so you don't repeat the flag:
+`mendell config set library.recognizer clap`.
+
 ## Windows
 
 Mendell runs on Windows — the codebase is pure cross-platform Python and every
@@ -213,8 +236,10 @@ as many folders as you like:
 
 ```bash
 mendell library add my-loops ~/Samples/lofi-loops --tags loops,lofi --json
+mendell library add my-drums ~/Samples/drums --recognize heuristic --json   # categorize by sound, not just filename
 mendell library search --bpm 90 --kind loop --json       # real loops at ~90 BPM, no path-hunting
 mendell library search --category bass --kind one-shot --json   # bass *hits* for a sampler, not phrases
+mendell library search --instrument piano --kind loop --json    # loops that actually contain piano
 mendell kit load my-song kit --library my-drums --json   # load a registered folder straight onto a track
 mendell sampler map add my-song kit --note C2 --sample my-drums/Kicks/808.wav --json
 ```
@@ -226,8 +251,17 @@ pass `--analyze` to also tempo-detect loops with no filename hint), and a **kind
 duration, and bar-alignment to its BPM. Category says *what* a sample is; kind says
 whether it's a phrase or a single hit (the two are independent, so you can ask for a
 `bass` `one-shot`). `library search`/`library show` answer immediately from the cache
-— no path-hunting, agent-friendly by design. See [`SPEC.md`](SPEC.md#sample-library)
-for the full reference.
+— no path-hunting, agent-friendly by design.
+
+By default the category comes from filename/folder keywords (instant). Pass `--recognize
+<backend>` (or set a default with `mendell config set library.recognizer <backend>`) to
+additionally *listen* to each file: a specific filename keyword still wins, but recognition
+fills in the rest and adds a multi-valued **instruments** list (a melodic loop →
+`[piano, strings]`; a full loop → `[drums, bass, keys]`) that `search --instrument` filters
+on. Four backends trade accuracy for weight — `heuristic` (local, zero-dep, coarse category
+only), `clap` (local, opt-in), and `gemini-embedding` / `gemini-generative` (cloud, opt-in);
+results are cached per file, so re-scans only re-analyze what changed. See
+[`SPEC.md`](SPEC.md#sample-library) for the full reference.
 
 Or build one up from the primitives directly:
 
@@ -274,7 +308,7 @@ mendell --help
 
 ## Tests
 
-Unit tests across five files, runnable with pytest (or `uv run pytest` if you use uv):
+Unit tests across eight files, runnable with pytest (or `uv run pytest` if you use uv):
 
 ```bash
 pytest tests/
@@ -285,7 +319,10 @@ uv run pytest tests/
 | File | Coverage |
 |------|----------|
 | `tests/test_beat.py` | `beat.new` / `beat.make` scaffolding, duration parsing, pattern generation, variation tiling |
+| `tests/test_beat_random32.py` | `beat random32` — archetype pattern engine, library-sourced sample selection, full editable project build |
 | `tests/test_durations.py` | `parse_duration_ms` / `format_duration_ms` edge cases |
-| `tests/test_library.py` | Sample library — add/scan/search/remove, BPM caching, category inference, loop/one-shot kind detection, env-var config isolation |
+| `tests/test_library.py` | Sample library — add/scan/search/remove, BPM caching, category inference, loop/one-shot kind detection, recognition fusion + caching, `--instrument` search, env-var config isolation |
+| `tests/test_recognize.py` | Content recognition — heuristic spectral classification, backend registry + missing-dependency errors, fusion precedence, per-mtime caching |
 | `tests/test_registry.py` | Project registry — auto-recording on create, genre, idempotent refresh, lookups, removal |
+| `tests/test_paths.py` | Project resolution — filesystem-first, bare-name via registry from any cwd, ambiguous-name and stale-entry handling |
 | `tests/test_config.py` | Global config — config.json materialization, OS-aware paths, projects-folder resolution, legacy-DB migration |
