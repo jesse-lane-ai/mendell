@@ -87,6 +87,57 @@ actually select that backend — with a message naming the exact `pip install` /
 fix. Once installed, set a default so you don't repeat the flag:
 `mendell config set library.recognizer clap`.
 
+### Optional: ACE-Step generative audio
+
+[ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) is an open generative-audio
+model family. Mendell wires it in two places (both opt-in and GPU-oriented):
+
+- **`mendell ace ...`** — generation, cover, repaint, layer, vocal2bgm, source
+  separation, audio understanding, LRC, scoring, simple mode, query rewriting.
+- **`--recognize ace-step`** — content recognition for `library add`/`scan`, using
+  ACE-Step's captioner model. See [SPEC.md](SPEC.md#ace-step-generative-audio) for
+  the full command reference and model zoo.
+
+ACE-Step isn't published on PyPI, so install it from source into the same
+environment:
+
+```bash
+pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
+```
+
+**Model downloads differ between the two paths:**
+
+- **Captioner (`--recognize ace-step`) auto-downloads.** On first use it pulls
+  [`ACE-Step/acestep-captioner`](https://huggingface.co/ACE-Step/acestep-captioner)
+  (~22 GB) from the Hugging Face Hub into the HF cache (`~/.cache/huggingface`, or
+  `HF_HOME`) and reuses it thereafter. It needs only `transformers` + `torch` (no
+  generation checkpoint). Override the model with `ACESTEP_CAPTIONER_MODEL`.
+  - The captioner is ~11B params. To fit a normal GPU, set
+    `ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight bitsandbytes
+    quantization (CUDA-only; `pip install bitsandbytes`) — ~6–7 GB / ~11 GB VRAM
+    instead of ~22 GB. This shrinks VRAM only; the full fp16 weights are still
+    downloaded and quantized as they load.
+
+- **Generation (`mendell ace ...`) is manual download.** It loads DiT + LM
+  checkpoints from a directory you point at — it never auto-fetches. Download the
+  checkpoints you want from the
+  [model zoo](https://github.com/ace-step/ACE-Step-1.5#-model-zoo) and set:
+
+  ```bash
+  export ACESTEP_CHECKPOINT_DIR=/path/to/checkpoints   # required
+  # optional: ACESTEP_DIT_CONFIG (default acestep-v15-turbo),
+  #           ACESTEP_LM_MODEL   (default acestep-5Hz-lm-1.7B),
+  #           ACESTEP_DEVICE     (cuda|mps|cpu|xpu), ACESTEP_LM_BACKEND
+  ```
+
+  Recommended all-round config: `acestep-v15-turbo` + `acestep-5Hz-lm-1.7B`. Note
+  that source separation (`mendell ace separate`) needs a `*-base` checkpoint —
+  `turbo`/`sft` are generation-only; the command says so if your checkpoint lacks it.
+
+Like every other backend these are lazy-loaded: a missing package, checkpoint, or
+env var only errors when you actually run the command, with the exact fix in the
+message.
+
 ## Windows
 
 Mendell runs on Windows — the codebase is pure cross-platform Python and every
