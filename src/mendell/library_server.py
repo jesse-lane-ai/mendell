@@ -21,8 +21,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import config as config_mod
 from . import library as library_mod
 from .errors import MendellError
+from .recognize import list_backends
 
 
 def _json_bytes(obj: object) -> bytes:
@@ -62,6 +64,11 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path in ("/", "/index.html", "/library.html"):
                 self._send(200, _PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            elif path == "/api/backends":
+                self._send_json({"ok": True, "data": {
+                    "backends": list_backends(),
+                    "default": config_mod.library_recognizer_default(),
+                }})
             elif path == "/api/libraries":
                 self._send_json({"ok": True, "data": library_mod.list_entries()})
             elif path == "/api/search":
@@ -87,9 +94,18 @@ class _Handler(BaseHTTPRequestHandler):
                 data = library_mod.remove(payload["name"])
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/add":
+                # recognize: a backend name, "" (filename-only), or "__default__"
+                # (honor the library.recognizer config setting, like the CLI).
+                recognize = payload.get("recognize", "__default__")
+                if recognize == "__default__":
+                    recognize = config_mod.library_recognizer_default()
+                elif recognize == "":
+                    recognize = None
                 data = library_mod.add(
                     payload["name"], payload["path"],
                     tags=[t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()] or None,
+                    analyze=bool(payload.get("analyze")),
+                    recognize=recognize,
                 )
                 self._send_json({"ok": True, "data": data})
             else:
@@ -234,6 +250,11 @@ _PAGE = r"""<!DOCTYPE html>
   <label>Name</label><input id="addName" placeholder="my-drums">
   <label>Folder path</label><input id="addPath" placeholder="/home/you/samples/drums">
   <label>Tags (comma-separated)</label><input id="addTags" placeholder="drums,lofi">
+  <label>Sound recognition</label>
+  <select id="addRecognize" style="width:100%"></select>
+  <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
+    <input type="checkbox" id="addAnalyze" style="width:auto"> Analyze BPM of loops (slower)
+  </label>
   <div class="row">
     <button onclick="addDlg.close()">Cancel</button>
     <button class="primary" onclick="doAdd()">Add</button>
@@ -338,17 +359,29 @@ async function removeLib(name) {
   if (activeLib === name) activeLib = "";
   loadLibs(); search();
 }
+async function loadBackends() {
+  const { backends, default: def } = await api("/api/backends");
+  const sel = document.getElementById("addRecognize");
+  const defLabel = def ? `config default (${def})` : "config default (none)";
+  let html = `<option value="__default__">${defLabel}</option>`;
+  html += `<option value="">filename only (no recognition)</option>`;
+  html += backends.map(b => `<option value="${b}">${b}</option>`).join("");
+  sel.innerHTML = html;
+}
+
 async function doAdd() {
   try {
     await api("/api/add", { method:"POST", body: JSON.stringify({
-      name: addName.value.trim(), path: addPath.value.trim(), tags: addTags.value
+      name: addName.value.trim(), path: addPath.value.trim(), tags: addTags.value,
+      recognize: document.getElementById("addRecognize").value,
+      analyze: document.getElementById("addAnalyze").checked,
     })});
     addDlg.close(); addName.value=addPath.value=addTags.value="";
     loadLibs(); search();
   } catch(e) { alert(e.message); }
 }
 
-loadLibs(); search();
+loadBackends(); loadLibs(); search();
 </script>
 </body>
 </html>
