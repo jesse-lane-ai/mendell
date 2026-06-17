@@ -17,6 +17,11 @@ Config (env):
                                   (default ``ACE-Step/acestep-captioner``).
   * ``ACESTEP_DEVICE``          — shared with the generation engine
                                   (``cuda`` | ``mps`` | ``cpu`` | ``xpu``).
+  * ``ACESTEP_CAPTIONER_LOAD``  — in-flight quantization: ``full`` (default),
+                                  ``8bit``, or ``4bit``. The quantized modes use
+                                  bitsandbytes (CUDA-only) to shrink the ~22 GB
+                                  model to ~11 GB / ~6–7 GB, quantizing only the
+                                  LLM tower so the audio encoder stays accurate.
 """
 
 from __future__ import annotations
@@ -50,6 +55,40 @@ class AceCaptioner:
     def _device(self) -> str:
         return os.environ.get("ACESTEP_DEVICE", "cuda")
 
+    def _load_mode(self) -> str:
+        """In-flight quantization mode: ``full`` (default, fp16/bf16),
+        ``8bit``, or ``4bit`` — the last two shrink the ~22 GB captioner to
+        roughly ~11 GB / ~6–7 GB of VRAM via bitsandbytes, quantizing only the
+        LLM tower (the audio encoder stays full precision)."""
+        mode = os.environ.get("ACESTEP_CAPTIONER_LOAD", "full").lower()
+        if mode not in ("full", "8bit", "4bit"):
+            raise BadInputError(
+                f"ACESTEP_CAPTIONER_LOAD must be 'full', '8bit', or '4bit' (got '{mode}')"
+            )
+        return mode
+
+    def _quant_config(self, mode: str):
+        """Build a bitsandbytes ``BitsAndBytesConfig`` for the quantized modes,
+        or ``None`` for ``full``. bitsandbytes is CUDA-only, so this is the GPU
+        path; raise an actionable error if the dep is missing."""
+        if mode == "full":
+            return None
+        try:
+            import bitsandbytes  # noqa: F401
+            from transformers import BitsAndBytesConfig
+        except ImportError as err:
+            raise BadInputError(
+                f"ACESTEP_CAPTIONER_LOAD={mode} needs bitsandbytes (CUDA-only) — "
+                f"install it with: pip install bitsandbytes (missing: {err.name})"
+            )
+        if mode == "8bit":
+            return BitsAndBytesConfig(load_in_8bit=True)
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype="float16",
+        )
+
     def check_available(self) -> None:
         """Verify the import-time dependencies are present *without* loading or
         downloading the model — used at backend-selection time to fail fast."""
@@ -73,12 +112,19 @@ class AceCaptioner:
             raise BadInputError(f"{CAPTIONER_INSTALL_HINT} (missing: {err.name})")
 
         model_id = self._model_id()
+        mode = self._load_mode()
+        quant_config = self._quant_config(mode)
         try:
             processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-            model = AutoModelForMultimodalLM.from_pretrained(
-                model_id, trust_remote_code=True
-            )
-            model.to(self._device())
+            kwargs = {"trust_remote_code": True}
+            if quant_config is not None:
+                # bitsandbytes places weights on the GPU itself and forbids a
+                # later .to(); let device_map handle placement.
+                kwargs["quantization_config"] = quant_config
+                kwargs["device_map"] = self._device()
+            model = AutoModelForMultimodalLM.from_pretrained(model_id, **kwargs)
+            if quant_config is None:
+                model.to(self._device())
             model.eval()
         except Exception as err:
             raise EngineError(f"failed to load ACE-Step captioner '{model_id}': {err}")

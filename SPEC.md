@@ -340,6 +340,12 @@ pip install transformers torch                 # captioner deps (no ACE-Step che
 mendell library add <name> <folder> --recognize ace-step
 ```
 
+The captioner is an ~11B model (~22 GB in fp16). To run it on a normal GPU, set
+`ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight bitsandbytes
+quantization (CUDA-only; `pip install bitsandbytes`) — this shrinks it to
+~6–7 GB / ~11 GB by quantizing only the LLM tower, leaving the audio encoder at
+full precision. Default is `full`.
+
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
 `drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,

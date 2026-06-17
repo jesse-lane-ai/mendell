@@ -204,3 +204,22 @@ def test_ace_step_backend_missing_dependency_raises_actionable_error(monkeypatch
 def test_gemini_generative_missing_dependency_raises_actionable_error():
     with pytest.raises(BadInputError, match=r"pip install 'mendell\[gemini\]'"):
         get_recognizer("gemini-generative")
+
+
+def test_captioner_load_mode_validates(monkeypatch):
+    from mendell.ace.captioner import AceCaptioner
+
+    cap = AceCaptioner()
+    for mode in ("full", "8bit", "4bit"):
+        monkeypatch.setenv("ACESTEP_CAPTIONER_LOAD", mode)
+        assert cap._load_mode() == mode
+    monkeypatch.setenv("ACESTEP_CAPTIONER_LOAD", "nope")
+    with pytest.raises(BadInputError, match=r"ACESTEP_CAPTIONER_LOAD"):
+        cap._load_mode()
+
+
+def test_captioner_full_mode_needs_no_quant_config():
+    from mendell.ace.captioner import AceCaptioner
+
+    # `full` must not require bitsandbytes.
+    assert AceCaptioner()._quant_config("full") is None
