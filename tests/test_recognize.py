@@ -160,7 +160,7 @@ def test_heuristic_recognizer_defers_on_unreadable_file():
 # --- registry -------------------------------------------------------------
 
 def test_list_backends():
-    assert list_backends() == ["clap", "gemini-embedding", "gemini-generative", "heuristic"]
+    assert list_backends() == ["ace-step", "clap", "gemini-embedding", "gemini-generative", "heuristic"]
 
 
 def test_get_recognizer_unknown_backend_raises():
@@ -182,6 +182,12 @@ def test_gemini_embedding_missing_dependency_raises_actionable_error(monkeypatch
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     with pytest.raises(BadInputError, match=r"pip install 'mendell\[gemini\]'"):
         get_recognizer("gemini-embedding")
+
+
+def test_ace_step_backend_unconfigured_raises_actionable_error(monkeypatch):
+    monkeypatch.delenv("ACESTEP_CHECKPOINT_DIR", raising=False)
+    with pytest.raises(BadInputError, match=r"ACESTEP_CHECKPOINT_DIR"):
+        get_recognizer("ace-step")
 
 
 def test_gemini_generative_missing_dependency_raises_actionable_error():

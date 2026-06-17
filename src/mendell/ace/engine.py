@@ -35,10 +35,10 @@ from typing import Any
 from ..errors import BadInputError, EngineError
 
 ACE_INSTALL_HINT = (
-    "ACE-Step generation needs the optional 'ace' dependencies and a model "
-    "checkpoint. Install the extra with: pip install 'mendell[ace]' — then set "
-    "ACESTEP_CHECKPOINT_DIR to your downloaded checkpoint directory "
-    "(see https://github.com/ace-step/ACE-Step-1.5)."
+    "ACE-Step generation needs the ACE-Step package and a model checkpoint. "
+    "Install it from source (it isn't on PyPI): pip install "
+    "'git+https://github.com/ace-step/ACE-Step-1.5' — then set "
+    "ACESTEP_CHECKPOINT_DIR to your downloaded checkpoint directory."
 )
 
 DEFAULT_DIT_CONFIG = "acestep-v15-turbo"

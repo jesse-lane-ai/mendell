@@ -244,6 +244,65 @@ mendell beat random32 <name> [--pattern <archetype>] [--bpm N] [--key A-G]
 `beat random32` produces a real project (under `<name>/`) you can keep editing —
 re-mix, re-arrange, swap loops, automate — not a one-off WAV.
 
+### ACE-Step (generative audio)
+
+`mendell ace ...` wraps the [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5)
+open model family — text-to-music generation, editing, source separation, and
+audio understanding. Like the `clap`/`gemini` recognizers it is **opt-in and
+heavyweight (GPU-oriented)**: ACE-Step isn't on PyPI, so install it from source
+and point Mendell at a downloaded checkpoint via environment variables. Any `ace`
+command without those raises an actionable error instead of a stack trace.
+
+```bash
+pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
+export ACESTEP_CHECKPOINT_DIR=/path/to/checkpoints   # required
+# optional overrides: ACESTEP_DIT_CONFIG, ACESTEP_LM_MODEL, ACESTEP_DEVICE
+#                     (cuda|mps|cpu|xpu), ACESTEP_LM_BACKEND
+```
+
+```bash
+# Text-to-music with full metadata control + optional reference audio. With
+# --track, the rendered file is auto-imported as an audio clip in one shot.
+mendell ace generate <project> --prompt "dusty lofi boom-bap, vinyl crackle"
+                      [--duration 30] [--bpm 90] [--key "C minor"] [--time-sig 4/4]
+                      [--lyrics "..."] [--ref ref.wav] [--batch N]
+                      [--track <name>] [--clip-name <name>] [--json]
+
+# Cover an existing track in a new style; --strength 0..1 (higher = further off)
+mendell ace cover <project> <source> --prompt "jazz piano version" [--strength 0.8] [--track ..]
+
+# Selectively regenerate a [start,end) window (seconds)
+mendell ace repaint <project> <source> --start 10 --end 20 --prompt "piano solo" [--track ..]
+
+# Add a layer over a track (multi-track / "Add Layer")
+mendell ace layer <project> <source> --prompt "a warm sub bass" [--strength 0.4] [--track ..]
+
+# Auto-generate instrumental accompaniment for a vocal
+mendell ace vocal2bgm <project> <vocal> --prompt "boom-bap drums and rhodes" [--track ..]
+
+# Source separation — one clip per stem, optionally imported onto a track
+mendell ace separate <project> <source> [--stems vocals,drums,bass,other] [--track ..]
+
+# Audio understanding: BPM, key/scale, time signature, caption
+mendell ace understand <project> <source>
+mendell ace lrc <project> <source>      # lyric timestamps
+mendell ace score <project> <source>    # quality score
+
+# LM helpers (no audio render): Simple Mode + Query Rewriting
+mendell ace simple <project> --prompt "a soft love song for a quiet evening" [--instrumental] [--language bn]
+mendell ace rewrite <project> [--caption "latin pop, reggaeton"] [--lyrics "..."] [--bpm 95]
+
+# LoRA fine-tuning is ACE-Step's one-click Gradio workflow, not a CLI call —
+# `ace lora` prints how to launch it.
+mendell ace lora
+```
+
+Generated audio lands in `<project>/generated/` and stems in `<project>/stems/`;
+passing `--track` imports the output as a placeable audio clip, so an agent can go
+from prompt → clip → arrangement without leaving the CLI. ACE-Step's understanding
+model is also available as a `library --recognize ace-step` content-recognition
+backend (caption-derived `category`/`instruments` tags).
+
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
 `drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,

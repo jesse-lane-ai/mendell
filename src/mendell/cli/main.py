@@ -3,6 +3,7 @@
 import click
 
 from .. import config as config_mod
+from . import ace as ace_cli
 from . import arrangement as arrangement_cli
 from . import automation as automation_cli
 from . import beat as beat_cli
@@ -47,6 +48,7 @@ cli.add_command(library_cli.library)
 cli.add_command(registry_cli.projects)
 cli.add_command(beat_cli.beat)
 cli.add_command(midi_cli.midi)
+cli.add_command(ace_cli.ace)
 
 
 if __name__ == "__main__":

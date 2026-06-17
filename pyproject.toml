@@ -32,6 +32,19 @@ clap = [
 gemini = [
     "google-genai>=0.3",
 ]
+# `ace ...` and `library ... --recognize ace-step` — ACE-Step 1.5, an open
+# generative audio model family (generation, cover, repaint, separation,
+# vocal2bgm, audio understanding). Heavyweight + GPU-oriented (CUDA/MPS/ROCm/
+# XPU/CPU); needs a downloaded checkpoint pointed to by ACESTEP_CHECKPOINT_DIR.
+#
+# ACE-Step is not published on PyPI — it's installed from its source repo
+# (`uv sync` in an ACE-Step checkout, or `pip install` from the GitHub URL).
+# So this extra carries no resolvable pin; install ACE-Step into the same
+# environment separately, e.g.:
+#   pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
+# The `ace.engine` wrapper lazy-imports `acestep` and raises an actionable
+# error if it (or ACESTEP_CHECKPOINT_DIR) is missing.
+ace = []
 
 [project.scripts]
 mendell = "mendell.cli.main:cli"
