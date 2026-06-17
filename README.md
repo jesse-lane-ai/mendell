@@ -114,7 +114,7 @@ pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
   generation checkpoint). Override the model with `ACESTEP_CAPTIONER_MODEL`.
   - The captioner is ~11B params. To fit a normal GPU, set
     `ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight bitsandbytes
-    quantization (CUDA-only; `pip install bitsandbytes`) — ~6–7 GB / ~11 GB VRAM
+    quantization (CUDA-only; `pip install bitsandbytes accelerate`) — ~6–7 GB / ~11 GB VRAM
     instead of ~22 GB. This shrinks VRAM only; the full fp16 weights are still
     downloaded and quantized as they load.
 

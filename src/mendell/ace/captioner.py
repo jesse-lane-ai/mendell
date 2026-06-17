@@ -74,12 +74,14 @@ class AceCaptioner:
         if mode == "full":
             return None
         try:
+            import accelerate  # noqa: F401  (device_map placement for quantized load)
             import bitsandbytes  # noqa: F401
             from transformers import BitsAndBytesConfig
         except ImportError as err:
             raise BadInputError(
-                f"ACESTEP_CAPTIONER_LOAD={mode} needs bitsandbytes (CUDA-only) — "
-                f"install it with: pip install bitsandbytes (missing: {err.name})"
+                f"ACESTEP_CAPTIONER_LOAD={mode} needs bitsandbytes + accelerate "
+                f"(CUDA-only) — install them with: pip install bitsandbytes accelerate "
+                f"(missing: {err.name})"
             )
         if mode == "8bit":
             return BitsAndBytesConfig(load_in_8bit=True)
@@ -167,7 +169,18 @@ class AceCaptioner:
                 text=text, audio=audio, return_tensors="pt", padding=True
             ).to(self._device())
             with torch.no_grad():
-                generated = model.generate(**inputs, max_new_tokens=256)
+                # Qwen2.5-Omni can also synthesize speech, in which case
+                # generate() returns (text_ids, audio_waveform). Ask for
+                # text-only; fall back if this build doesn't accept the kwarg.
+                try:
+                    generated = model.generate(
+                        **inputs, max_new_tokens=256, return_audio=False
+                    )
+                except TypeError:
+                    generated = model.generate(**inputs, max_new_tokens=256)
+            # Unwrap a (text_ids, audio) tuple if the talker still fired.
+            if isinstance(generated, (tuple, list)):
+                generated = generated[0]
             # Drop the prompt tokens before decoding so we keep only the caption.
             trimmed = generated[:, inputs["input_ids"].shape[1]:]
             out = processor.batch_decode(
