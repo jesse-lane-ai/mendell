@@ -324,9 +324,21 @@ mendell ace lora
 
 Generated audio lands in `<project>/generated/` and stems in `<project>/stems/`;
 passing `--track` imports the output as a placeable audio clip, so an agent can go
-from prompt → clip → arrangement without leaving the CLI. ACE-Step's understanding
-model is also available as a `library --recognize ace-step` content-recognition
-backend (caption-derived `category`/`instruments` tags).
+from prompt → clip → arrangement without leaving the CLI.
+
+**Content recognition (`--recognize ace-step`)** — ACE-Step's purpose-built
+captioner, [`ACE-Step/acestep-captioner`](https://huggingface.co/ACE-Step/acestep-captioner)
+(a Qwen2.5-Omni-7B multimodal model), is wired in as a `library` recognition
+backend alongside `clap`/`gemini`. It needs only `transformers` + `torch` (no
+generation checkpoint — far lighter than the DiT stack); the model downloads on
+first use and is overridable via `ACESTEP_CAPTIONER_MODEL`. Its free-text caption
+is keyword-mapped onto the standard `category`/`instruments` taxonomy, so it
+fuses with filename guesses exactly like the other backends.
+
+```bash
+pip install transformers torch                 # captioner deps (no ACE-Step checkpoint needed)
+mendell library add <name> <folder> --recognize ace-step
+```
 
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of

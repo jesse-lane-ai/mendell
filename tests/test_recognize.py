@@ -184,9 +184,20 @@ def test_gemini_embedding_missing_dependency_raises_actionable_error(monkeypatch
         get_recognizer("gemini-embedding")
 
 
-def test_ace_step_backend_unconfigured_raises_actionable_error(monkeypatch):
-    monkeypatch.delenv("ACESTEP_CHECKPOINT_DIR", raising=False)
-    with pytest.raises(BadInputError, match=r"ACESTEP_CHECKPOINT_DIR"):
+def test_ace_step_backend_missing_dependency_raises_actionable_error(monkeypatch):
+    # Simulate `transformers` being unavailable: the captioner's dependency
+    # check should surface an actionable install hint at selection time.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "transformers" or name.startswith("transformers."):
+            raise ImportError("No module named 'transformers'", name="transformers")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(BadInputError, match=r"pip install transformers"):
         get_recognizer("ace-step")
 
 

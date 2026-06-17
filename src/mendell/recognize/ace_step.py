@@ -1,15 +1,17 @@
-"""``ace-step`` recognizer — content recognition via ACE-Step's audio
-understanding (caption + BPM/key) mapped onto Mendell's taxonomy.
+"""``ace-step`` recognizer — content recognition via ACE-Step's purpose-built
+captioner model (``ACE-Step/acestep-captioner``, a Qwen2.5-Omni multimodal
+model), mapped onto Mendell's taxonomy.
 
-Reuses the generative ``ace.engine`` wrapper's ``understand`` path: ACE-Step
-returns a free-text caption per file, which we keyword-map onto the same
-``category`` / ``instruments`` vocabularies the other recognizers emit, so the
-library fusion logic (``library._fuse_category``) treats it identically.
+The captioner emits a free-text description per file; we keyword-map that
+caption onto the same ``category`` / ``instruments`` vocabularies the other
+recognizers emit, so the library fusion logic (``library._fuse_category``)
+treats it identically.
 
-Like ``clap``, this is an opt-in extra and cannot be exercised in this
-environment (no model checkpoint). Selecting it without the ``ace`` extra (or
-without ``ACESTEP_CHECKPOINT_DIR``) raises an actionable ``BadInputError`` via
-the engine constructor.
+This path needs only ``transformers`` + ``torch`` (no ACE-Step generation
+checkpoint), so it's far lighter than reusing the generative engine. Like
+``clap`` it's opt-in and can't be exercised in this environment (no model
+download). Selecting it without ``transformers`` raises an actionable
+``BadInputError`` via the captioner constructor's first use.
 """
 
 from __future__ import annotations
@@ -18,8 +20,7 @@ from .types import INSTRUMENT_VOCAB, LOOP_CATEGORIES, ONESHOT_CATEGORIES, FilePr
 
 NAME = "ace-step"
 
-# Confidence floor for a caption-derived verdict — ACE-Step's caption is a
-# strong signal but it's a text match, so keep it modest.
+# A caption hit on the taxonomy is a strong but text-derived signal.
 CAPTION_CONFIDENCE = 0.7
 INSTRUMENT_CAP = 4
 
@@ -34,29 +35,29 @@ def _match_vocab(caption: str, vocab: tuple[str, ...]) -> list[str]:
 
 
 class AceStepRecognizer:
-    """Caption-based recognition via the ACE-Step understanding model."""
+    """Caption-based recognition via the ACE-Step captioner."""
 
     name = NAME
 
     def __init__(self) -> None:
-        # Construct the engine eagerly so a missing extra / checkpoint fails
-        # fast at backend-selection time (matches ClapRecognizer's contract).
-        from ..ace.engine import get_engine
+        # Construct the captioner eagerly so a missing dependency fails fast at
+        # backend-selection time (matches ClapRecognizer's contract); the model
+        # itself is loaded lazily on first caption.
+        from ..ace.captioner import get_captioner
 
-        self._engine = get_engine()
-        # Force the config check (raises BadInputError if unconfigured) without
-        # loading the model weights yet.
-        self._engine._config()
+        self._captioner = get_captioner()
+        # Surface a missing `transformers`/`torch` now rather than mid-batch
+        # (cheap import check — does not download the model).
+        self._captioner.check_available()
 
     def recognize(self, items: list[FileProbe]) -> list[Recognition | None]:
         results: list[Recognition | None] = []
         for item in items:
             try:
-                verdict = self._engine.understand(src_audio=str(item.path))
+                caption = self._captioner.caption(str(item.path))
             except Exception:
                 results.append(None)  # defer to filename guess
                 continue
-            caption = verdict.caption or ""
             if not caption:
                 results.append(None)
                 continue
