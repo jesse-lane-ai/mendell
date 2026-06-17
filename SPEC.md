@@ -256,9 +256,34 @@ command without those raises an actionable error instead of a stack trace.
 ```bash
 pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
 export ACESTEP_CHECKPOINT_DIR=/path/to/checkpoints   # required
-# optional overrides: ACESTEP_DIT_CONFIG, ACESTEP_LM_MODEL, ACESTEP_DEVICE
-#                     (cuda|mps|cpu|xpu), ACESTEP_LM_BACKEND
+# optional overrides: ACESTEP_DIT_CONFIG (default acestep-v15-turbo),
+#                     ACESTEP_LM_MODEL (default acestep-5Hz-lm-1.7B),
+#                     ACESTEP_DEVICE (cuda|mps|cpu|xpu), ACESTEP_LM_BACKEND
 ```
+
+**Model zoo** — download checkpoints into `ACESTEP_CHECKPOINT_DIR` and select
+them with `ACESTEP_DIT_CONFIG` / `ACESTEP_LM_MODEL`. Links + index:
+[awesome-ace-step](https://github.com/ace-step/awesome-ace-step),
+[model zoo](https://github.com/ace-step/ACE-Step-1.5#-model-zoo).
+
+| DiT model | Size | VRAM | Tasks |
+|---|---|---|---|
+| `acestep-v15-turbo` *(default)* | 2B | ~4.7 GB | text2music, cover, repaint (8-step, fast) |
+| `acestep-v15-sft` | 2B | ~4.7 GB | text2music, cover, repaint (50-step) |
+| `acestep-v15-base` | 2B | ~4.7 GB | **+ extract (separation), lego, complete** |
+| `acestep-v15-xl-{turbo,sft,base}` | 4B | ≥12 GB | as above, higher fidelity |
+
+| LM model | Size | Notes |
+|---|---|---|
+| `acestep-5Hz-lm-0.6B` | 0.6B | lightweight |
+| `acestep-5Hz-lm-1.7B` *(default)* | 1.7B | recommended, full feature coverage |
+| `acestep-5Hz-lm-4B` | 4B | strongest audio understanding |
+
+> **Capability gate:** `ace separate` (and the underlying `extract`/`lego`/
+> `complete` tasks) require a **`*-base`** DiT checkpoint — `turbo`/`sft` are
+> generation-only. Point `ACESTEP_DIT_CONFIG` at `acestep-v15-base` (or
+> `-xl-base`) for separation. The recommended all-round config is
+> `acestep-v15-turbo` + `acestep-5Hz-lm-1.7B`.
 
 ```bash
 # Text-to-music with full metadata control + optional reference audio. With

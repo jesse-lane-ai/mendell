@@ -42,9 +42,20 @@ ACE_INSTALL_HINT = (
 )
 
 DEFAULT_DIT_CONFIG = "acestep-v15-turbo"
-DEFAULT_LM_MODEL = "acestep-5Hz-lm-0.6B"
+DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"  # upstream-recommended default LM
 DEFAULT_DEVICE = "cuda"
 DEFAULT_LM_BACKEND = "vllm"
+
+# DiT capabilities are checkpoint-dependent: the `extract` (separation), `lego`
+# (multi-track), and `complete` tasks only exist in the *-base / *-xl-base
+# checkpoints — turbo/sft are generation-only (text2music/cover/repaint). This
+# isn't enforced here (we can't introspect an arbitrary checkpoint's task set),
+# but `separate()` surfaces it in its error hint.
+_BASE_ONLY_HINT = (
+    "this task needs a base checkpoint — set ACESTEP_DIT_CONFIG to "
+    "'acestep-v15-base' (or '-xl-base'); turbo/sft only do "
+    "text2music/cover/repaint."
+)
 
 
 @dataclass(frozen=True)
@@ -221,12 +232,18 @@ class AceEngine:
 
     def separate(self, *, src_audio: str, stem: str, save_dir: str,
                  audio_format: str = "flac") -> AceResult:
-        """Extract a single stem (``vocals`` / ``drums`` / ``bass`` / ...)."""
-        return self._run(
-            {"task_type": "extract", "src_audio": src_audio,
-             "instruction": f"Extract the {stem} track from the audio:"},
-            save_dir=save_dir, audio_format=audio_format,
-        )
+        """Extract a single stem (``vocals`` / ``drums`` / ``bass`` / ...).
+
+        Requires a base checkpoint — turbo/sft don't ship the ``extract``
+        task (see ``_BASE_ONLY_HINT``)."""
+        try:
+            return self._run(
+                {"task_type": "extract", "src_audio": src_audio,
+                 "instruction": f"Extract the {stem} track from the audio:"},
+                save_dir=save_dir, audio_format=audio_format,
+            )
+        except EngineError as err:
+            raise EngineError(f"{err} — {_BASE_ONLY_HINT}")
 
     def layer(self, *, src_audio: str, instruction: str, save_dir: str,
               strength: float = 0.4, audio_format: str = "flac") -> AceResult:
