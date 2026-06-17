@@ -16,6 +16,9 @@ download). Selecting it without ``transformers`` raises an actionable
 
 from __future__ import annotations
 
+import os
+import sys
+
 from .types import INSTRUMENT_VOCAB, LOOP_CATEGORIES, ONESHOT_CATEGORIES, FileProbe, Recognition
 
 NAME = "ace-step"
@@ -51,14 +54,21 @@ class AceStepRecognizer:
         self._captioner.check_available()
 
     def recognize(self, items: list[FileProbe]) -> list[Recognition | None]:
+        # Captioning is the slow part (seconds per file), and the whole add
+        # commits in one transaction, so emit per-file progress to stderr — it
+        # never touches the JSON envelope on stdout and shows up in both the CLI
+        # and the `library serve` terminal. Silence with MENDELL_QUIET=1.
+        total = len(items)
         results: list[Recognition | None] = []
-        for item in items:
+        for i, item in enumerate(items, start=1):
             try:
                 caption = self._captioner.caption(str(item.path))
-            except Exception:
+            except Exception as err:
+                self._progress(i, total, item.filename, f"deferred ({type(err).__name__})")
                 results.append(None)  # defer to filename guess
                 continue
             if not caption:
+                self._progress(i, total, item.filename, "deferred (empty caption)")
                 results.append(None)
                 continue
 
@@ -67,6 +77,7 @@ class AceStepRecognizer:
             category = matched_cats[0] if matched_cats else cats[0]
             instruments = _match_vocab(caption, INSTRUMENT_VOCAB)[:INSTRUMENT_CAP]
 
+            self._progress(i, total, item.filename, f"-> {category}")
             results.append(
                 Recognition(
                     category=category,
@@ -76,3 +87,10 @@ class AceStepRecognizer:
                 )
             )
         return results
+
+    @staticmethod
+    def _progress(done: int, total: int, filename: str, note: str) -> None:
+        if os.environ.get("MENDELL_QUIET"):
+            return
+        sys.stderr.write(f"[ace-step] {done}/{total} {filename} {note}\n")
+        sys.stderr.flush()
