@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -101,6 +102,15 @@ class _Handler(BaseHTTPRequestHandler):
                     recognize = config_mod.library_recognizer_default()
                 elif recognize == "":
                     recognize = None
+                # For the ACE-Step captioner, let the UI pick the in-flight
+                # quantization mode (full/8bit/4bit) by setting the env var the
+                # captioner reads. Note: the captioner is a process singleton,
+                # so this takes effect on the first ace-step add and the model
+                # stays loaded at that mode for the rest of the server's life.
+                if recognize == "ace-step":
+                    load = (payload.get("captioner_load") or "").strip()
+                    if load:
+                        os.environ["ACESTEP_CAPTIONER_LOAD"] = load
                 data = library_mod.add(
                     payload["name"], payload["path"],
                     tags=[t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()] or None,
@@ -251,7 +261,16 @@ _PAGE = r"""<!DOCTYPE html>
   <label>Folder path</label><input id="addPath" placeholder="/home/you/samples/drums">
   <label>Tags (comma-separated)</label><input id="addTags" placeholder="drums,lofi">
   <label>Sound recognition</label>
-  <select id="addRecognize" style="width:100%"></select>
+  <select id="addRecognize" style="width:100%" onchange="onRecognizeChange()"></select>
+  <div id="captionerLoadRow" style="display:none;margin-top:10px">
+    <label>ACE-Step captioner VRAM (in-flight quantization)</label>
+    <select id="addCaptionerLoad" style="width:100%">
+      <option value="full">full — fp16, ~22 GB VRAM</option>
+      <option value="8bit">8bit — ~11 GB VRAM (needs bitsandbytes)</option>
+      <option value="4bit">4bit — ~6–7 GB VRAM (needs bitsandbytes)</option>
+    </select>
+    <small style="opacity:.7">Applied on the first ace-step add; the model stays loaded at that mode.</small>
+  </div>
   <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
     <input type="checkbox" id="addAnalyze" style="width:auto"> Analyze BPM of loops (slower)
   </label>
@@ -359,14 +378,25 @@ async function removeLib(name) {
   if (activeLib === name) activeLib = "";
   loadLibs(); search();
 }
+let recognizeDefault = null;
 async function loadBackends() {
   const { backends, default: def } = await api("/api/backends");
+  recognizeDefault = def;
   const sel = document.getElementById("addRecognize");
   const defLabel = def ? `config default (${def})` : "config default (none)";
   let html = `<option value="__default__">${defLabel}</option>`;
   html += `<option value="">filename only (no recognition)</option>`;
   html += backends.map(b => `<option value="${b}">${b}</option>`).join("");
   sel.innerHTML = html;
+  onRecognizeChange();
+}
+function onRecognizeChange() {
+  // Show the captioner VRAM picker only when the effective backend is ace-step
+  // (selected directly, or via "config default" resolving to it).
+  let val = document.getElementById("addRecognize").value;
+  if (val === "__default__") val = recognizeDefault;
+  document.getElementById("captionerLoadRow").style.display =
+    (val === "ace-step") ? "block" : "none";
 }
 
 async function doAdd() {
@@ -374,6 +404,7 @@ async function doAdd() {
     await api("/api/add", { method:"POST", body: JSON.stringify({
       name: addName.value.trim(), path: addPath.value.trim(), tags: addTags.value,
       recognize: document.getElementById("addRecognize").value,
+      captioner_load: document.getElementById("addCaptionerLoad").value,
       analyze: document.getElementById("addAnalyze").checked,
     })});
     addDlg.close(); addName.value=addPath.value=addTags.value="";
