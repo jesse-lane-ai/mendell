@@ -48,6 +48,21 @@ def _batch_size() -> int:
         return 8
 
 
+def _plan_batches(items: list[FileProbe], batch_size: int) -> list[list[int]]:
+    """Group item indices into batches of up to ``batch_size``, sorted by
+    duration (unknown = 0) so similar-length clips ride together.
+
+    The captioner pads each batch's mel to its longest clip, so grouping by
+    length keeps a long loop from inflating the padding of a batch of short
+    one-shots — but only when a library is large enough to span multiple
+    batches. For a folder that fits in a single batch this is a no-op, which is
+    what we want: the captioner's cost is dominated by a fixed per-call overhead,
+    so the *fewest* batches is fastest (the small mel-activation saving from
+    tighter padding doesn't come close to paying for an extra call)."""
+    order = sorted(range(len(items)), key=lambda idx: items[idx].duration or 0.0)
+    return [order[i:i + batch_size] for i in range(0, len(order), batch_size)]
+
+
 def _gpu_mem_mib() -> int | None:
     """Best-effort current GPU memory use (MiB) via nvidia-smi; None if no GPU
     / nvidia-smi. Cheap enough to sample per file (4 samples = 4 calls)."""
@@ -144,19 +159,16 @@ class AceStepRecognizer:
         batch_size = _batch_size()
         run_start = time.time()
 
-        # The captioner pads each batch's mel to the longest clip in it, so a
-        # single long loop would inflate the padding (and cost) for every short
-        # one-shot batched with it. Group by duration first: similar-length
-        # clips ride together and a long loop only slows its own batch. Files
-        # with unknown duration sort as 0 (with the short one-shots). Output
-        # order is preserved by scattering results back to their input index.
-        order = sorted(range(total), key=lambda idx: items[idx].duration or 0.0)
+        # Plan batches length-first: the captioner pads each batch's mel to its
+        # longest clip, so similar-length clips ride together (a long loop only
+        # slows its own batch). Output order is preserved by scattering results
+        # back to each item's input index.
+        batches = _plan_batches(items, batch_size)
         analytics.emit({"event": "config", "batch_size": batch_size,
-                        "length_bucketed": True})
+                        "num_batches": len(batches), "length_bucketed": True})
 
         done = 0
-        for batch_no, start in enumerate(range(0, total, batch_size), start=1):
-            idx_chunk = order[start:start + batch_size]
+        for batch_no, idx_chunk in enumerate(batches, start=1):
             chunk = [items[idx] for idx in idx_chunk]
             # The longest clip in the batch sets the mel padding, so surface it
             # — makes the cost of a loop-heavy vs one-shot batch visible.

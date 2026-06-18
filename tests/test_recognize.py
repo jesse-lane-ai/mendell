@@ -349,6 +349,28 @@ def test_ace_recognizer_buckets_by_length(monkeypatch):
     ]
 
 
+def test_plan_batches_sorts_by_duration():
+    from mendell.recognize.ace_step import _plan_batches
+
+    items = [
+        _probe("a.wav", duration=0.3),
+        _probe("loop1.wav", kind="loop", duration=9.0),
+        _probe("b.wav", duration=0.3),
+        _probe("loop2.wav", kind="loop", duration=9.0),
+        _probe("c.wav", duration=0.3),
+    ]
+    batches = _plan_batches(items, batch_size=3)
+    # Sorted by duration, chunked by batch_size: the three shorts ride together,
+    # the two loops form the next batch.
+    assert [len(b) for b in batches] == [3, 2]
+    assert all(items[i].duration < 1.0 for i in batches[0])
+    assert all(items[i].duration == 9.0 for i in batches[1])
+    # Single batch when everything fits — a no-op grouping for small folders.
+    assert len(_plan_batches(items, batch_size=8)) == 1
+    # Every index appears exactly once.
+    assert sorted(i for b in batches for i in b) == list(range(len(items)))
+
+
 def test_ace_recognizer_isolates_bad_file_in_batch(monkeypatch):
     monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "3")
     cap = _FakeCaptioner(
