@@ -225,17 +225,31 @@ def test_captioner_full_mode_needs_no_quant_config():
     assert AceCaptioner()._quant_config("full") is None
 
 
+def test_captioner_max_audio_seconds_parsing(monkeypatch):
+    from mendell.ace.captioner import AceCaptioner
+
+    cap = AceCaptioner()
+    monkeypatch.delenv("ACESTEP_CAPTIONER_AUDIO_SECONDS", raising=False)
+    assert cap._max_audio_seconds() == 30.0  # default
+    monkeypatch.setenv("ACESTEP_CAPTIONER_AUDIO_SECONDS", "10")
+    assert cap._max_audio_seconds() == 10.0
+    monkeypatch.setenv("ACESTEP_CAPTIONER_AUDIO_SECONDS", "0")
+    assert cap._max_audio_seconds() == 0.5  # floored
+    monkeypatch.setenv("ACESTEP_CAPTIONER_AUDIO_SECONDS", "nope")
+    assert cap._max_audio_seconds() == 30.0  # bad value falls back
+
+
 def test_batch_size_env_parsing(monkeypatch):
     from mendell.recognize import ace_step
 
     monkeypatch.delenv("ACESTEP_CAPTIONER_BATCH", raising=False)
-    assert ace_step._batch_size() == 1
-    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "8")
-    assert ace_step._batch_size() == 8
+    assert ace_step._batch_size() == 8  # default
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "4")
+    assert ace_step._batch_size() == 4
     monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "0")
     assert ace_step._batch_size() == 1  # clamped to >= 1
     monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "nope")
-    assert ace_step._batch_size() == 1  # non-integer falls back
+    assert ace_step._batch_size() == 8  # non-integer falls back to default
 
 
 class _FakeCaptioner:

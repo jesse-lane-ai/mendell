@@ -33,11 +33,19 @@ INSTRUMENT_CAP = 4
 
 def _batch_size() -> int:
     """Files per captioner ``generate()`` call (env ``ACESTEP_CAPTIONER_BATCH``,
-    default 1). Clamped to >= 1; a non-integer value falls back to 1."""
+    default 8). Clamped to >= 1; a non-integer value falls back to the default.
+
+    The captioner has a large fixed per-call cost (multimodal prefill) that is
+    roughly batch-independent, so batching is the dominant throughput lever:
+    per-file time falls ~linearly with batch size until the GPU saturates. With
+    the audio-encoder padding capped to real clip length (see
+    ``AceCaptioner._max_audio_seconds``) the extra VRAM per batched file is just
+    a small KV cache, so a moderate default is safe; lower it if you OOM on long
+    loops or a small card."""
     try:
-        return max(1, int(os.environ.get("ACESTEP_CAPTIONER_BATCH", "1")))
+        return max(1, int(os.environ.get("ACESTEP_CAPTIONER_BATCH", "8")))
     except ValueError:
-        return 1
+        return 8
 
 
 def _gpu_mem_mib() -> int | None:
