@@ -195,12 +195,12 @@ _PAGE = r"""<!DOCTYPE html>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #14161a; color: #e6e8eb; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #14161a; color: #e6e8eb; overflow-x: hidden; }
   header { padding: 16px 20px; border-bottom: 1px solid #2a2e35; display: flex; align-items: center; gap: 16px; }
   h1 { font-size: 18px; margin: 0; font-weight: 600; }
-  main { display: grid; grid-template-columns: 240px 1fr; min-height: calc(100vh - 57px); }
+  main { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: calc(100vh - 57px); }
   aside { border-right: 1px solid #2a2e35; padding: 16px; }
-  section { padding: 16px 20px; }
+  section { padding: 16px 20px; min-width: 0; }
   .lib { padding: 8px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
   .lib:hover { background: #1d2026; }
   .lib.active { background: #2b3140; }
@@ -213,11 +213,21 @@ _PAGE = r"""<!DOCTYPE html>
   button:hover { background: #262b34; }
   button.primary { background: #3b5bdb; border-color: #3b5bdb; }
   button.primary:hover { background: #4666e8; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #23262d; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #23262d; vertical-align: top; overflow-wrap: anywhere; }
   th { color: #8b93a1; font-weight: 500; position: sticky; top: 0; background: #14161a; }
-  td.ref { white-space: normal; word-break: break-all; max-width: 360px; }
-  td.cap { max-width: 420px; font-size: 12px; line-height: 1.35; }
+  th.num, td.num { white-space: nowrap; }
+  col.c-play { width: 44px; }
+  col.c-ref { width: 22%; }
+  col.c-cat { width: 9%; }
+  col.c-kind { width: 7%; }
+  col.c-bpm { width: 52px; }
+  col.c-dur { width: 56px; }
+  col.c-inst { width: 14%; }
+  col.c-cap { width: 26%; }
+  col.c-tags { width: 12%; }
+  td.ref { word-break: break-all; }
+  td.cap { font-size: 12px; line-height: 1.35; }
   .tag { display: inline-block; background: #232834; color: #aab3c2; border-radius: 4px; padding: 1px 6px; margin: 0 2px 2px 0; font-size: 12px; }
   .play { width: 30px; height: 30px; border-radius: 50%; padding: 0; }
   .play.on { background: #2f9e44; border-color: #2f9e44; }
@@ -348,7 +358,12 @@ function populateCategories(matches) {
 function render(matches) {
   const el = document.getElementById("results");
   if (!matches.length) { el.innerHTML = '<div class="empty">No matching samples.</div>'; return; }
-  let html = `<table><thead><tr><th></th><th>ref</th><th>category</th><th>kind</th><th>bpm</th><th>dur</th><th>instruments</th><th>caption</th><th>tags</th></tr></thead><tbody>`;
+  let html = `<table>
+    <colgroup>
+      <col class="c-play"><col class="c-ref"><col class="c-cat"><col class="c-kind">
+      <col class="c-bpm"><col class="c-dur"><col class="c-inst"><col class="c-cap"><col class="c-tags">
+    </colgroup>
+    <thead><tr><th></th><th>ref</th><th>category</th><th>kind</th><th class="num">bpm</th><th class="num">dur</th><th>instruments</th><th>caption</th><th>tags</th></tr></thead><tbody>`;
   for (const m of matches) {
     const ref = m.ref.replace(/'/g, "\\'");
     const cap = esc(m.caption||"");
@@ -357,8 +372,8 @@ function render(matches) {
       <td class="ref">${m.ref}</td>
       <td>${m.category||""}</td>
       <td class="muted">${m.kind||""}</td>
-      <td>${m.bpm?Math.round(m.bpm):""}</td>
-      <td class="muted">${m.duration?m.duration.toFixed(1)+"s":""}</td>
+      <td class="num">${m.bpm?Math.round(m.bpm):""}</td>
+      <td class="num muted">${m.duration?m.duration.toFixed(1)+"s":""}</td>
       <td>${(m.instruments||[]).map(i=>`<span class="tag">${i}</span>`).join("")}</td>
       <td class="cap muted" title="${cap}">${cap}</td>
       <td>${(m.tags||[]).map(x=>`<span class="tag">${x}</span>`).join("")}</td>
