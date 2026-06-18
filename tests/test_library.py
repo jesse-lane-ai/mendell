@@ -425,6 +425,11 @@ def test_recognize_caption_is_persisted_and_surfaced(lib_config, tmp_path, fake_
     f = {x["ref"]: x for x in library.show("pack")["files"]}
     assert f["pack/weird-thing.wav"]["caption"] == "a dry, snappy percussion hit"
 
+    # The caption must also come back via search() — that's the path the web UI
+    # uses, and it has its own column list (regression: it omitted caption).
+    s = {x["ref"]: x for x in library.search(library="pack")["matches"]}
+    assert s["pack/weird-thing.wav"]["caption"] == "a dry, snappy percussion hit"
+
     # And it survives a cache-hit rescan (caption restored from recognition_cache).
     library.scan("pack", recognize="fake")
     f2 = {x["ref"]: x for x in library.show("pack")["files"]}

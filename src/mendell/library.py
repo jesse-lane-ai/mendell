@@ -658,7 +658,7 @@ def search(
         sql = f"""
             SELECT f.library_name, f.rel_path, f.category, f.bpm, f.bpm_source,
                    f.kind, f.kind_source, f.duration, f.instruments,
-                   f.category_source, f.category_confidence, l.tags
+                   f.category_source, f.category_confidence, f.caption, l.tags
             FROM files f
             JOIN libraries l ON l.name = f.library_name
             {where}
