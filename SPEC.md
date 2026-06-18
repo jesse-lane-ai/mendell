@@ -354,6 +354,8 @@ VRAM, so prefer `full` when it fits.
   that's about the same for 1 file or 16), so batching is the dominant lever:
   per-file time falls roughly linearly with batch size. `full` + batch 16 on a
   24 GB card reaches ~0.3–0.7 s/file for one-shots (vs ~7 s/file unbatched 4bit).
+  Files are grouped by length before batching, so a long loop only inflates the
+  mel padding of its own batch rather than a batch of short one-shots.
 - `ACESTEP_CAPTIONER_AUDIO_SECONDS` (default 30) — caps how much of each clip
   reaches the audio encoder. The model otherwise pads every clip's mel to a
   fixed ~300 s window, so short samples pay a huge constant encoder cost; the cap

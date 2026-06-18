@@ -139,22 +139,38 @@ class AceStepRecognizer:
             "load_mode": self._captioner._load_mode(), "vram_mib": _gpu_mem_mib(),
         })
 
-        results: list[Recognition | None] = []
+        results: list[Recognition | None] = [None] * total
         counts = {"captioned": 0, "deferred": 0}
         batch_size = _batch_size()
         run_start = time.time()
-        analytics.emit({"event": "config", "batch_size": batch_size})
 
-        # Process in chunks so the captioner can amortize per-call overhead
-        # across files (the main throughput lever). `start` tracks the global
-        # file index so per-file progress/analytics stay 1..total.
-        for start in range(0, total, batch_size):
-            chunk = items[start:start + batch_size]
+        # The captioner pads each batch's mel to the longest clip in it, so a
+        # single long loop would inflate the padding (and cost) for every short
+        # one-shot batched with it. Group by duration first: similar-length
+        # clips ride together and a long loop only slows its own batch. Files
+        # with unknown duration sort as 0 (with the short one-shots). Output
+        # order is preserved by scattering results back to their input index.
+        order = sorted(range(total), key=lambda idx: items[idx].duration or 0.0)
+        analytics.emit({"event": "config", "batch_size": batch_size,
+                        "length_bucketed": True})
+
+        done = 0
+        for batch_no, start in enumerate(range(0, total, batch_size), start=1):
+            idx_chunk = order[start:start + batch_size]
+            chunk = [items[idx] for idx in idx_chunk]
+            # The longest clip in the batch sets the mel padding, so surface it
+            # — makes the cost of a loop-heavy vs one-shot batch visible.
+            durs = [c.duration for c in chunk if c.duration is not None]
+            t_batch = time.time()
             captions = self._caption_chunk(chunk)
-            for offset, (item, caption) in enumerate(zip(chunk, captions)):
-                i = start + offset + 1
-                results.append(
-                    self._record_file(i, total, item, caption, analytics, counts)
+            analytics.emit({"event": "batch", "batch": batch_no, "size": len(chunk),
+                            "max_duration": round(max(durs), 2) if durs else None,
+                            "seconds": round(time.time() - t_batch, 2),
+                            "vram_mib": _gpu_mem_mib()})
+            for idx, item, caption in zip(idx_chunk, chunk, captions):
+                done += 1
+                results[idx] = self._record_file(
+                    done, total, item, caption, analytics, counts
                 )
 
         elapsed = time.time() - run_start

@@ -294,8 +294,8 @@ def _ace_recognizer(captioner):
     return rec
 
 
-def _probe(name, kind="one-shot"):
-    return FileProbe(path=Path(f"/tmp/{name}"), filename=name, duration=0.5, kind=kind)
+def _probe(name, kind="one-shot", duration=0.5):
+    return FileProbe(path=Path(f"/tmp/{name}"), filename=name, duration=duration, kind=kind)
 
 
 def test_ace_recognizer_batches_files(monkeypatch):
@@ -315,6 +315,38 @@ def test_ace_recognizer_batches_files(monkeypatch):
     assert [r.category for r in out] == ["kick", "snare", "hat"]
     assert out[0].caption == "a deep kick drum"
     assert all(r.source == "ace-step" for r in out)
+
+
+def test_ace_recognizer_buckets_by_length(monkeypatch):
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "2")
+    # Interleaved short/long input; batching by length should group the two
+    # long loops together and the two short hits together, regardless of input
+    # order — so no batch mixes a long loop with a short one-shot.
+    cap = _FakeCaptioner({
+        "hit1.wav": "a short kick",
+        "loop1.wav": "a long drum loop",
+        "hit2.wav": "a short snare",
+        "loop2.wav": "a long bass loop",
+    })
+    rec = _ace_recognizer(cap)
+    probes = [
+        _probe("hit1.wav", duration=0.5),
+        _probe("loop1.wav", kind="loop", duration=8.0),
+        _probe("hit2.wav", duration=0.4),
+        _probe("loop2.wav", kind="loop", duration=9.0),
+    ]
+    out = rec.recognize(probes)
+
+    # Each batch holds only same-scale clips.
+    assert ["hit2.wav", "hit1.wav"] in cap.batch_calls  # shorts together
+    assert ["loop1.wav", "loop2.wav"] in cap.batch_calls  # longs together
+    for batch in cap.batch_calls:
+        is_long = ["loop" in n for n in batch]
+        assert all(is_long) or not any(is_long), batch
+    # Output order matches input order, not processing order.
+    assert [r.caption for r in out] == [
+        "a short kick", "a long drum loop", "a short snare", "a long bass loop"
+    ]
 
 
 def test_ace_recognizer_isolates_bad_file_in_batch(monkeypatch):

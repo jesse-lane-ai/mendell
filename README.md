@@ -127,6 +127,8 @@ pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
     (default 8) sets files per call; per-file time falls almost linearly with it.
     On a 24 GB card `full` + batch 16 captions one-shots at **~0.3–0.7 s/file**
     (vs ~7 s/file unbatched in 4bit). Lower the batch if you OOM on long loops.
+    Batches are **grouped by clip length** automatically, so one long loop only
+    inflates the padding of its own batch instead of a batch full of short hits.
   - **Audio length is capped** to the longest clip actually in the batch (or
     `ACESTEP_CAPTIONER_AUDIO_SECONDS`, default 30) instead of the model's fixed
     ~300 s window — so a half-second drum hit no longer pays 300 s of audio-encoder
