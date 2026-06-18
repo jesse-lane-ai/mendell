@@ -22,7 +22,14 @@ import subprocess
 import sys
 import time
 
-from .types import INSTRUMENT_VOCAB, LOOP_CATEGORIES, ONESHOT_CATEGORIES, FileProbe, Recognition
+from .types import (
+    INSTRUMENT_VOCAB,
+    LOOP_CATEGORIES,
+    ONESHOT_CATEGORIES,
+    FileProbe,
+    Recognition,
+    ResultSink,
+)
 
 NAME = "ace-step"
 
@@ -126,11 +133,13 @@ class AceStepRecognizer:
         # (cheap import check — does not download the model).
         self._captioner.check_available()
 
-    def recognize(self, items: list[FileProbe]) -> list[Recognition | None]:
-        # Captioning is the slow part (seconds per file), and the whole add
-        # commits in one transaction, so emit per-file progress to stderr — it
-        # never touches the JSON envelope on stdout and shows up in both the CLI
-        # and the `library serve` terminal. Silence with MENDELL_QUIET=1.
+    def recognize(self, items: list[FileProbe],
+                  on_result: "ResultSink | None" = None) -> list[Recognition | None]:
+        # Captioning is the slow part (seconds per file). Emit per-file progress
+        # to stderr — it never touches the JSON envelope on stdout and shows up
+        # in both the CLI and the `library serve` terminal. Silence with
+        # MENDELL_QUIET=1. ``on_result`` (when given) is called as each file's
+        # verdict lands so the caller can checkpoint a long scan for resume.
         #
         # Set MENDELL_ACE_ANALYTICS=<path> to also append a JSONL analytics
         # record per file (timing, caption, derived tags, VRAM) plus load/summary
@@ -184,6 +193,14 @@ class AceStepRecognizer:
                 results[idx] = self._record_file(
                     done, total, item, caption, analytics, counts
                 )
+                if on_result is not None:
+                    # Stream the verdict out per file so the caller can
+                    # checkpoint a long scan. Best-effort: a sink failure must
+                    # not abort captioning (we still return the full list).
+                    try:
+                        on_result(item, results[idx])
+                    except Exception:
+                        pass
 
         elapsed = time.time() - run_start
         analytics.emit({"event": "summary", "total_files": total,

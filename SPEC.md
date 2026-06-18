@@ -368,6 +368,12 @@ VRAM, so prefer `full` when it fits.
 One-time costs (model load, first-call CUDA warmup) amortize over the library, so
 a handful of files reads slower per-file than a large scan.
 
+**Resumable scans.** Recognition verdicts are committed to the `recognition_cache`
+per file as they're produced, so a long scan that dies partway (crash, OOM,
+Ctrl-C) keeps its completed work. Re-running `library add`/`library scan` matches
+unchanged files by `(rel_path, mtime)` and re-recognizes only the remainder —
+resume is automatic, no extra flag. `library remove` clears a library's cache.
+
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
 `drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,

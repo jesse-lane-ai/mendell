@@ -137,6 +137,12 @@ pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
   - One-time costs (model load, first-call CUDA warmup) amortize over the library,
     so a folder of a handful of files looks slower per-file than a big scan.
 
+  **Resumable.** A scan checkpoints each file's verdict to the recognition cache
+  as it lands (committed per file), so a crash, OOM, or Ctrl-C partway through a
+  thousands-of-files drop loses only the in-flight batch. Re-running
+  `library add` (or `library scan`) skips everything already captioned and
+  resumes from where it stopped — unchanged files are matched by path + mtime.
+
 - **Generation (`mendell ace ...`) is manual download.** It loads DiT + LM
   checkpoints from a directory you point at — it never auto-fetches. Download the
   checkpoints you want from the
