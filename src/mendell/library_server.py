@@ -217,6 +217,7 @@ _PAGE = r"""<!DOCTYPE html>
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #23262d; white-space: nowrap; }
   th { color: #8b93a1; font-weight: 500; position: sticky; top: 0; background: #14161a; }
   td.ref { white-space: normal; word-break: break-all; max-width: 360px; }
+  td.cap { max-width: 420px; font-size: 12px; line-height: 1.35; }
   .tag { display: inline-block; background: #232834; color: #aab3c2; border-radius: 4px; padding: 1px 6px; margin: 0 2px 2px 0; font-size: 12px; }
   .play { width: 30px; height: 30px; border-radius: 50%; padding: 0; }
   .play.on { background: #2f9e44; border-color: #2f9e44; }
@@ -284,6 +285,10 @@ _PAGE = r"""<!DOCTYPE html>
 <script>
 let activeLib = "";
 let curBtn = null;
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
 const player = document.getElementById("player");
 player.onended = () => { if (curBtn) { curBtn.classList.remove("on"); curBtn.textContent="▶"; curBtn=null; } };
 
@@ -343,9 +348,10 @@ function populateCategories(matches) {
 function render(matches) {
   const el = document.getElementById("results");
   if (!matches.length) { el.innerHTML = '<div class="empty">No matching samples.</div>'; return; }
-  let html = `<table><thead><tr><th></th><th>ref</th><th>category</th><th>kind</th><th>bpm</th><th>dur</th><th>instruments</th><th>tags</th></tr></thead><tbody>`;
+  let html = `<table><thead><tr><th></th><th>ref</th><th>category</th><th>kind</th><th>bpm</th><th>dur</th><th>instruments</th><th>caption</th><th>tags</th></tr></thead><tbody>`;
   for (const m of matches) {
     const ref = m.ref.replace(/'/g, "\\'");
+    const cap = esc(m.caption||"");
     html += `<tr>
       <td><button class="play" onclick="play(this,'${ref}')">▶</button></td>
       <td class="ref">${m.ref}</td>
@@ -354,6 +360,7 @@ function render(matches) {
       <td>${m.bpm?Math.round(m.bpm):""}</td>
       <td class="muted">${m.duration?m.duration.toFixed(1)+"s":""}</td>
       <td>${(m.instruments||[]).map(i=>`<span class="tag">${i}</span>`).join("")}</td>
+      <td class="cap muted" title="${cap}">${cap}</td>
       <td>${(m.tags||[]).map(x=>`<span class="tag">${x}</span>`).join("")}</td>
     </tr>`;
   }

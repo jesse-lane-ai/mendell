@@ -84,6 +84,7 @@ class AceStepRecognizer:
                     instruments=instruments,
                     source=NAME,
                     confidence=CAPTION_CONFIDENCE if matched_cats else 0.3,
+                    caption=caption,
                 )
             )
         return results

@@ -173,6 +173,9 @@ def _migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "files", "instruments", "TEXT")
     _add_column_if_missing(con, "files", "category_source", "TEXT")
     _add_column_if_missing(con, "files", "category_confidence", "REAL")
+    # Free-text caption from a generative recognizer (e.g. ace-step); NULL for
+    # backends that don't produce one, and for rows indexed before this column.
+    _add_column_if_missing(con, "files", "caption", "TEXT")
 
     # Recognition cache, keyed by (library, rel_path, mtime) — lets re-scans
     # skip re-recognizing unchanged files (content backends can be slow/billed).
@@ -188,6 +191,7 @@ def _migrate(con: sqlite3.Connection) -> None:
             PRIMARY KEY (library_name, rel_path, backend)
         );
     """)
+    _add_column_if_missing(con, "recognition_cache", "caption", "TEXT")
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +291,10 @@ def _write_recognition_cache(con: sqlite3.Connection, library_name: str, backend
     ``confidence``). Other backends' cache rows are left untouched."""
     con.execute("DELETE FROM recognition_cache WHERE library_name = ? AND backend = ?", (library_name, backend))
     con.executemany(
-        "INSERT INTO recognition_cache (library_name, rel_path, mtime, backend, category, instruments, confidence) "
-        "VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO recognition_cache (library_name, rel_path, mtime, backend, category, instruments, confidence, caption) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         [
-            (library_name, e["rel_path"], e["mtime"], backend, e["category"], ",".join(e["instruments"]), e["confidence"])
+            (library_name, e["rel_path"], e["mtime"], backend, e["category"], ",".join(e["instruments"]), e["confidence"], e.get("caption"))
             for e in entries
         ],
     )
@@ -360,6 +364,7 @@ def _index_folder(
                 recognitions[i] = _Recognition(
                     category=cached["category"], instruments=instruments,
                     source=recognize, confidence=cached["confidence"],
+                    caption=cached["caption"] if "caption" in cached.keys() else None,
                 )
             else:
                 to_recognize_idx.append(i)
@@ -387,6 +392,7 @@ def _index_folder(
                 cache_entries.append({
                     "rel_path": rel, "mtime": item["mtime"], "category": recognition.category,
                     "instruments": recognition.instruments, "confidence": recognition.confidence,
+                    "caption": recognition.caption,
                 })
             _write_recognition_cache(con, library_name, recognize, cache_entries)
 
@@ -417,6 +423,8 @@ def _index_folder(
             entry["category_confidence"] = category_confidence
         if recognition is not None:
             entry["instruments"] = recognition.instruments
+            if recognition.caption:
+                entry["caption"] = recognition.caption
         indexed.append(entry)
     return indexed
 
@@ -433,14 +441,14 @@ def _write_files(con: sqlite3.Connection, name: str, indexed: list[dict[str, Any
     con.executemany(
         "INSERT INTO files "
         "(library_name, rel_path, category, bpm, bpm_source, kind, kind_source, duration, "
-        "instruments, category_source, category_confidence) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "instruments, category_source, category_confidence, caption) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (
                 name, f["path"], f["category"], f.get("bpm"), f.get("bpm_source"),
                 f.get("kind"), f.get("kind_source"), f.get("duration"),
                 ",".join(f["instruments"]) if "instruments" in f else None,
-                f.get("category_source"), f.get("category_confidence"),
+                f.get("category_source"), f.get("category_confidence"), f.get("caption"),
             )
             for f in indexed
         ],
@@ -478,6 +486,8 @@ def _add_file_metadata(summary: dict[str, Any], row: sqlite3.Row) -> dict[str, A
         summary["category_source"] = row["category_source"]
     if row["category_confidence"] is not None:
         summary["category_confidence"] = row["category_confidence"]
+    if "caption" in row.keys() and row["caption"]:
+        summary["caption"] = row["caption"]
     return summary
 
 

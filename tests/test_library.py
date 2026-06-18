@@ -410,6 +410,27 @@ def test_recognize_fallback_below_threshold_keeps_default(lib_config, tmp_path, 
     assert "category_confidence" not in entry
 
 
+def test_recognize_caption_is_persisted_and_surfaced(lib_config, tmp_path, fake_recognizer):
+    """A backend caption round-trips through the DB and shows up on the file."""
+    folder = tmp_path / "pack"
+    folder.mkdir()
+    _write_wav(folder / "weird-thing.wav", 0.2)
+
+    fake_recognizer.verdicts["weird-thing.wav"] = Recognition(
+        category="perc", instruments=["drums"], source="fake", confidence=0.9,
+        caption="a dry, snappy percussion hit",
+    )
+
+    library.add("pack", str(folder), recognize="fake")
+    f = {x["ref"]: x for x in library.show("pack")["files"]}
+    assert f["pack/weird-thing.wav"]["caption"] == "a dry, snappy percussion hit"
+
+    # And it survives a cache-hit rescan (caption restored from recognition_cache).
+    library.scan("pack", recognize="fake")
+    f2 = {x["ref"]: x for x in library.show("pack")["files"]}
+    assert f2["pack/weird-thing.wav"]["caption"] == "a dry, snappy percussion hit"
+
+
 def test_recognize_none_omits_new_columns(lib_config, tmp_path, fake_recognizer):
     """Without --recognize, the new columns are absent — unchanged behavior."""
     folder = tmp_path / "pack"
