@@ -117,6 +117,11 @@ pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
     quantization (CUDA-only; `pip install bitsandbytes accelerate`) — ~6–7 GB / ~11 GB VRAM
     instead of ~22 GB. This shrinks VRAM only; the full fp16 weights are still
     downloaded and quantized as they load.
+  - Captioning dominates the wall-clock of a large scan (seconds per file). Set
+    `ACESTEP_CAPTIONER_BATCH=N` (default 1) to caption `N` files per model call,
+    which amortizes per-call overhead and cuts total time on big folders. Higher
+    `N` uses more VRAM (the longest clip in the batch sets the padded length);
+    try 4–8 on a 24 GB card.
 
 - **Generation (`mendell ace ...`) is manual download.** It loads DiT + LM
   checkpoints from a directory you point at — it never auto-fetches. Download the

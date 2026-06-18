@@ -223,3 +223,102 @@ def test_captioner_full_mode_needs_no_quant_config():
 
     # `full` must not require bitsandbytes.
     assert AceCaptioner()._quant_config("full") is None
+
+
+def test_batch_size_env_parsing(monkeypatch):
+    from mendell.recognize import ace_step
+
+    monkeypatch.delenv("ACESTEP_CAPTIONER_BATCH", raising=False)
+    assert ace_step._batch_size() == 1
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "8")
+    assert ace_step._batch_size() == 8
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "0")
+    assert ace_step._batch_size() == 1  # clamped to >= 1
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "nope")
+    assert ace_step._batch_size() == 1  # non-integer falls back
+
+
+class _FakeCaptioner:
+    """Records how files were grouped into generate() calls so we can assert
+    the recognizer batches correctly, and can simulate a whole-batch failure."""
+
+    def __init__(self, captions, fail_batch=False):
+        self._captions = captions  # filename -> caption (or Exception to raise)
+        self.fail_batch = fail_batch
+        self.batch_calls = []
+        self.single_calls = []
+        self._model = object()  # already-loaded sentinel
+
+    def _load(self):
+        return self._model, None
+
+    def _load_mode(self):
+        return "full"
+
+    def _one(self, path):
+        val = self._captions[Path(path).name]
+        if isinstance(val, Exception):
+            raise val
+        return val
+
+    def caption(self, path):
+        self.single_calls.append(Path(path).name)
+        return self._one(path)
+
+    def caption_batch(self, paths):
+        self.batch_calls.append([Path(p).name for p in paths])
+        if self.fail_batch:
+            raise RuntimeError("batch blew up")
+        return [self._one(p) for p in paths]
+
+
+def _ace_recognizer(captioner):
+    from mendell.recognize.ace_step import AceStepRecognizer
+
+    rec = AceStepRecognizer.__new__(AceStepRecognizer)  # skip dependency load
+    rec._captioner = captioner
+    return rec
+
+
+def _probe(name, kind="one-shot"):
+    return FileProbe(path=Path(f"/tmp/{name}"), filename=name, duration=0.5, kind=kind)
+
+
+def test_ace_recognizer_batches_files(monkeypatch):
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "2")
+    cap = _FakeCaptioner({
+        "kick.wav": "a deep kick drum",
+        "snare.wav": "a snappy snare",
+        "hat.wav": "a closed hi-hat",
+    })
+    rec = _ace_recognizer(cap)
+    out = rec.recognize([_probe("kick.wav"), _probe("snare.wav"), _probe("hat.wav")])
+
+    # Grouped into chunks of 2 (2 + 1): the full pair goes through one
+    # batched generate(), the trailing single-file chunk uses caption().
+    assert cap.batch_calls == [["kick.wav", "snare.wav"]]
+    assert cap.single_calls == ["hat.wav"]
+    assert [r.category for r in out] == ["kick", "snare", "hat"]
+    assert out[0].caption == "a deep kick drum"
+    assert all(r.source == "ace-step" for r in out)
+
+
+def test_ace_recognizer_isolates_bad_file_in_batch(monkeypatch):
+    monkeypatch.setenv("ACESTEP_CAPTIONER_BATCH", "3")
+    cap = _FakeCaptioner(
+        {
+            "kick.wav": "a deep kick drum",
+            "bad.wav": RuntimeError("decode failed"),
+            "snare.wav": "a snappy snare",
+        },
+        fail_batch=True,
+    )
+    rec = _ace_recognizer(cap)
+    out = rec.recognize([_probe("kick.wav"), _probe("bad.wav"), _probe("snare.wav")])
+
+    # Whole-batch failure retried file-by-file; the bad file defers (None),
+    # the others still produce recognitions.
+    assert cap.single_calls == ["kick.wav", "bad.wav", "snare.wav"]
+    assert out[0].category == "kick"
+    assert out[1] is None
+    assert out[2].category == "snare"

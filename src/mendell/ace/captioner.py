@@ -22,6 +22,11 @@ Config (env):
                                   bitsandbytes (CUDA-only) to shrink the ~22 GB
                                   model to ~11 GB / ~6–7 GB, quantizing only the
                                   LLM tower so the audio encoder stays accurate.
+  * ``ACESTEP_CAPTIONER_BATCH`` — files per ``generate()`` call (default ``1``).
+                                  Higher values amortize per-call overhead and
+                                  cut wall-clock on large scans, at the cost of
+                                  more VRAM (longest clip in the batch sets the
+                                  padded length). Try 4–8 on a 24 GB card.
 """
 
 from __future__ import annotations
@@ -144,29 +149,56 @@ class AceCaptioner:
         waveform, _ = librosa.load(path, sr=sr, mono=True)
         return waveform
 
-    def caption(self, path: str) -> str:
-        """Return a free-text caption for the audio file at ``path``."""
-        import torch
-
-        model, processor = self._load()
-        audio = self._load_audio(path)
-
-        # Qwen2.5-Omni-style multimodal chat: one audio turn + the captioning
-        # instruction. Built via the chat template so it works across processor
-        # versions; the documented "<audio>" placeholder is supplied by the
-        # template's audio content part.
-        conversation = [
+    def _conversation(self, audio):
+        """Qwen2.5-Omni-style multimodal chat: one audio turn + the captioning
+        instruction. Built via the chat template so it works across processor
+        versions; the documented "<audio>" placeholder is supplied by the
+        template's audio content part."""
+        return [
             {"role": "user", "content": [
                 {"type": "audio", "audio": audio},
                 {"type": "text", "text": CAPTION_PROMPT},
             ]}
         ]
-        try:
-            text = processor.apply_chat_template(
-                conversation, add_generation_prompt=True, tokenize=False
+
+    def caption(self, path: str) -> str:
+        """Return a free-text caption for the audio file at ``path``."""
+        return self.caption_batch([path])[0]
+
+    def caption_batch(self, paths: list[str]) -> list[str]:
+        """Caption several files in one ``generate()`` call.
+
+        Batching amortizes the per-call Python/kernel-launch overhead across
+        files, which is the main throughput lever for the captioner (a
+        multi-hour library scan is dominated by thousands of single-file
+        round-trips). Decoder generation is done with **left padding** so every
+        row's prompt is the same length and the prompt-trim below is uniform.
+
+        Returns one caption per input path, in order. An empty list in, empty
+        list out.
+        """
+        if not paths:
+            return []
+        import torch
+
+        model, processor = self._load()
+        audios = [self._load_audio(p) for p in paths]
+        texts = [
+            processor.apply_chat_template(
+                self._conversation(a), add_generation_prompt=True, tokenize=False
             )
+            for a in audios
+        ]
+
+        # Left-pad so the (right-aligned) prompts share a common length; without
+        # it batched generation would mis-trim and emit pad tokens mid-caption.
+        tok = getattr(processor, "tokenizer", None)
+        prev_side = getattr(tok, "padding_side", None) if tok is not None else None
+        if tok is not None:
+            tok.padding_side = "left"
+        try:
             inputs = processor(
-                text=text, audio=audio, return_tensors="pt", padding=True
+                text=texts, audio=audios, return_tensors="pt", padding=True
             ).to(self._device())
             with torch.no_grad():
                 # Qwen2.5-Omni can also synthesize speech, in which case
@@ -181,14 +213,17 @@ class AceCaptioner:
             # Unwrap a (text_ids, audio) tuple if the talker still fired.
             if isinstance(generated, (tuple, list)):
                 generated = generated[0]
-            # Drop the prompt tokens before decoding so we keep only the caption.
+            # Drop the (uniform, left-padded) prompt tokens before decoding.
             trimmed = generated[:, inputs["input_ids"].shape[1]:]
             out = processor.batch_decode(
                 trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=True
             )
         except Exception as err:
             raise EngineError(f"ACE-Step captioner inference error: {err}")
-        return (out[0] if out else "").strip()
+        finally:
+            if tok is not None and prev_side is not None:
+                tok.padding_side = prev_side
+        return [(c or "").strip() for c in out]
 
 
 _CAPTIONER: AceCaptioner | None = None

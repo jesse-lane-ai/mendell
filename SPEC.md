@@ -346,6 +346,12 @@ quantization (CUDA-only; `pip install bitsandbytes accelerate`) — this shrinks
 ~6–7 GB / ~11 GB by quantizing only the LLM tower, leaving the audio encoder at
 full precision. Default is `full`.
 
+Captioning is the slow part of a scan (seconds per file). Set
+`ACESTEP_CAPTIONER_BATCH=N` (default 1) to caption `N` files per model call —
+this amortizes per-call overhead and cuts wall-clock on large folders, at the
+cost of more VRAM (the longest clip in a batch sets its padded length). 4–8 is a
+reasonable range on a 24 GB card.
+
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
 `drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,

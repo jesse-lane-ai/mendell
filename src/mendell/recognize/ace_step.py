@@ -31,6 +31,15 @@ CAPTION_CONFIDENCE = 0.7
 INSTRUMENT_CAP = 4
 
 
+def _batch_size() -> int:
+    """Files per captioner ``generate()`` call (env ``ACESTEP_CAPTIONER_BATCH``,
+    default 1). Clamped to >= 1; a non-integer value falls back to 1."""
+    try:
+        return max(1, int(os.environ.get("ACESTEP_CAPTIONER_BATCH", "1")))
+    except ValueError:
+        return 1
+
+
 def _gpu_mem_mib() -> int | None:
     """Best-effort current GPU memory use (MiB) via nvidia-smi; None if no GPU
     / nvidia-smi. Cheap enough to sample per file (4 samples = 4 calls)."""
@@ -123,57 +132,91 @@ class AceStepRecognizer:
         })
 
         results: list[Recognition | None] = []
-        captioned = deferred = 0
+        counts = {"captioned": 0, "deferred": 0}
+        batch_size = _batch_size()
         run_start = time.time()
-        for i, item in enumerate(items, start=1):
-            t0 = time.time()
-            try:
-                caption = self._captioner.caption(str(item.path))
-            except Exception as err:
-                deferred += 1
-                self._progress(i, total, item.filename, f"deferred ({type(err).__name__})")
-                analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
-                                "seconds": round(time.time() - t0, 2), "deferred": f"{type(err).__name__}: {err}"})
-                results.append(None)  # defer to filename guess
-                continue
-            seconds = round(time.time() - t0, 2)
-            if not caption:
-                deferred += 1
-                self._progress(i, total, item.filename, "deferred (empty caption)")
-                analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
-                                "seconds": seconds, "deferred": "empty caption"})
-                results.append(None)
-                continue
+        analytics.emit({"event": "config", "batch_size": batch_size})
 
-            cats = _categories(item.kind)
-            matched_cats = _match_vocab(caption, cats)
-            category = matched_cats[0] if matched_cats else cats[0]
-            instruments = _match_vocab(caption, INSTRUMENT_VOCAB)[:INSTRUMENT_CAP]
-            confidence = CAPTION_CONFIDENCE if matched_cats else 0.3
-            captioned += 1
-
-            self._progress(i, total, item.filename, f"{seconds}s -> {category}")
-            analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
-                            "kind": item.kind, "seconds": seconds, "category": category,
-                            "category_matched": bool(matched_cats), "instruments": instruments,
-                            "confidence": confidence, "vram_mib": _gpu_mem_mib(),
-                            "caption": caption})
-            results.append(
-                Recognition(
-                    category=category,
-                    instruments=instruments,
-                    source=NAME,
-                    confidence=confidence,
-                    caption=caption,
+        # Process in chunks so the captioner can amortize per-call overhead
+        # across files (the main throughput lever). `start` tracks the global
+        # file index so per-file progress/analytics stay 1..total.
+        for start in range(0, total, batch_size):
+            chunk = items[start:start + batch_size]
+            captions = self._caption_chunk(chunk)
+            for offset, (item, caption) in enumerate(zip(chunk, captions)):
+                i = start + offset + 1
+                results.append(
+                    self._record_file(i, total, item, caption, analytics, counts)
                 )
-            )
 
-        analytics.emit({"event": "summary", "total_files": total, "captioned": captioned,
-                        "deferred": deferred, "inference_seconds": round(time.time() - run_start, 2),
-                        "avg_seconds_per_file": round((time.time() - run_start) / max(total, 1), 2),
+        elapsed = time.time() - run_start
+        analytics.emit({"event": "summary", "total_files": total,
+                        "captioned": counts["captioned"], "deferred": counts["deferred"],
+                        "batch_size": batch_size, "inference_seconds": round(elapsed, 2),
+                        "avg_seconds_per_file": round(elapsed / max(total, 1), 2),
                         "vram_mib": _gpu_mem_mib()})
         analytics.close()
         return results
+
+    def _caption_chunk(self, chunk: list[FileProbe]) -> list[str | None]:
+        """Caption a batch, returning one entry per item (``None`` marks a
+        failure to defer). A whole-batch error is retried file-by-file so one
+        bad file can't sink the rest of the batch."""
+        if len(chunk) == 1:
+            try:
+                return [self._captioner.caption(str(chunk[0].path))]
+            except Exception:
+                return [None]
+        try:
+            return list(self._captioner.caption_batch([str(c.path) for c in chunk]))
+        except Exception:
+            out: list[str | None] = []
+            for c in chunk:
+                try:
+                    out.append(self._captioner.caption(str(c.path)))
+                except Exception:
+                    out.append(None)
+            return out
+
+    def _record_file(self, i: int, total: int, item: FileProbe,
+                     caption: str | None, analytics: "_Analytics",
+                     counts: dict) -> Recognition | None:
+        """Map one file's caption onto the taxonomy, emit progress/analytics,
+        and return its ``Recognition`` (or ``None`` to defer to the filename
+        guess)."""
+        if caption is None:
+            counts["deferred"] += 1
+            self._progress(i, total, item.filename, "deferred (caption error)")
+            analytics.emit({"event": "file", "i": i, "total": total,
+                            "file": item.filename, "deferred": "caption error"})
+            return None
+        if not caption:
+            counts["deferred"] += 1
+            self._progress(i, total, item.filename, "deferred (empty caption)")
+            analytics.emit({"event": "file", "i": i, "total": total,
+                            "file": item.filename, "deferred": "empty caption"})
+            return None
+
+        cats = _categories(item.kind)
+        matched_cats = _match_vocab(caption, cats)
+        category = matched_cats[0] if matched_cats else cats[0]
+        instruments = _match_vocab(caption, INSTRUMENT_VOCAB)[:INSTRUMENT_CAP]
+        confidence = CAPTION_CONFIDENCE if matched_cats else 0.3
+        counts["captioned"] += 1
+
+        self._progress(i, total, item.filename, f"-> {category}")
+        analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
+                        "kind": item.kind, "category": category,
+                        "category_matched": bool(matched_cats), "instruments": instruments,
+                        "confidence": confidence, "vram_mib": _gpu_mem_mib(),
+                        "caption": caption})
+        return Recognition(
+            category=category,
+            instruments=instruments,
+            source=NAME,
+            confidence=confidence,
+            caption=caption,
+        )
 
     @staticmethod
     def _progress(done: int, total: int, filename: str, note: str) -> None:
