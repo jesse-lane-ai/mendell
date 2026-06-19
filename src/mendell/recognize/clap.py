@@ -49,6 +49,13 @@ class ClapRecognizer:
     name = NAME
 
     def __init__(self) -> None:
+        import sys
+
+        # LAION-CLAP builds its training arg parser at *import* time and calls
+        # ``parse_args()`` on the real ``sys.argv``, so it exits the moment it
+        # sees our CLI flags. Shield it behind a bare argv during import.
+        saved_argv = sys.argv
+        sys.argv = [saved_argv[0]] if saved_argv else [""]
         try:
             import torch  # noqa: F401
             import laion_clap  # noqa: F401
@@ -56,6 +63,8 @@ class ClapRecognizer:
             raise BadInputError(
                 f"{CLAP_INSTALL_HINT} (missing: {err.name})"
             )
+        finally:
+            sys.argv = saved_argv
         # Model load is deferred to first `recognize()` call so constructing
         # the registry entry (e.g. for `library.search` introspection) never
         # forces a model download.
@@ -63,10 +72,45 @@ class ClapRecognizer:
 
     def _ensure_model(self):
         if self._model is None:
+            import sys
+
             import laion_clap
 
-            model = laion_clap.CLAP_Module(enable_fusion=False)
-            model.load_ckpt()  # downloads/loads the pretrained checkpoint
+            # ``CLAP_Module`` constructs LAION-CLAP's training arg parser, which
+            # calls ``parse_args()`` on the *real* ``sys.argv`` and exits when it
+            # sees our CLI's flags (e.g. ``library add ... --recognize clap``).
+            # Shield it behind a bare argv while the model is built.
+            import torch
+
+            saved_argv = sys.argv
+            sys.argv = [saved_argv[0]] if saved_argv else [""]
+            # torch >= 2.6 defaults ``torch.load(weights_only=True)``, which
+            # rejects the (trusted) LAION-CLAP checkpoint's numpy globals.
+            # Force the legacy behaviour just for the checkpoint load.
+            saved_load = torch.load
+
+            def _load(*args, **kwargs):
+                kwargs.setdefault("weights_only", False)
+                return saved_load(*args, **kwargs)
+
+            torch.load = _load
+            try:
+                model = laion_clap.CLAP_Module(enable_fusion=False)
+                # Newer ``transformers`` drops buffers like
+                # ``text_branch.embeddings.position_ids`` that exist in the
+                # published checkpoint, so a strict load fails. Force the
+                # inner module's ``load_state_dict`` to be non-strict.
+                inner = model.model
+                strict_load = inner.load_state_dict
+
+                def _load_state_dict(state_dict, strict=True):
+                    return strict_load(state_dict, strict=False)
+
+                inner.load_state_dict = _load_state_dict
+                model.load_ckpt()  # downloads/loads the pretrained checkpoint
+            finally:
+                sys.argv = saved_argv
+                torch.load = saved_load
             self._model = model
         return self._model
 
@@ -74,21 +118,30 @@ class ClapRecognizer:
         if not items:
             return []
 
+        import numpy as np
+
         model = self._ensure_model()
 
+        def _np(embed):
+            # This ``laion_clap`` build returns torch tensors (no ``use_tensor``
+            # kwarg); normalise everything to numpy for the scoring below.
+            if hasattr(embed, "detach"):
+                return embed.detach().cpu().numpy()
+            return np.asarray(embed)
+
         paths = [str(item.path) for item in items]
-        audio_embeds = model.get_audio_embedding_from_filelist(x=paths, use_tensor=False)
+        audio_embeds = _np(model.get_audio_embedding_from_filelist(x=paths))
 
         results: list[Recognition | None] = []
         for item, audio_embed in zip(items, audio_embeds):
             categories = _category_prompts(item.kind)
-            category_embeds = model.get_text_embedding(list(categories), use_tensor=False)
+            category_embeds = _np(model.get_text_embedding(list(categories)))
             category_scores = audio_embed @ category_embeds.T
             best_idx = int(category_scores.argmax())
             category = categories[best_idx]
             category_confidence = float(category_scores[best_idx])
 
-            instrument_embeds = model.get_text_embedding(list(INSTRUMENT_VOCAB), use_tensor=False)
+            instrument_embeds = _np(model.get_text_embedding(list(INSTRUMENT_VOCAB)))
             instrument_scores = audio_embed @ instrument_embeds.T
             top_score = float(instrument_scores.max())
             threshold = top_score * INSTRUMENT_THRESHOLD_RATIO
