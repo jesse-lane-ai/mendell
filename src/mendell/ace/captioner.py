@@ -197,6 +197,28 @@ class AceCaptioner:
         self._model, self._processor = model, processor
         return model, processor
 
+    def unload(self) -> None:
+        """Drop the model + processor and free GPU memory.
+
+        Used by long-running hosts (e.g. the library server) to release the
+        ~6–22 GB of VRAM the captioner holds once a scan is done. The next
+        ``caption()`` transparently reloads — so callers that import
+        back-to-back should keep it warm instead. No-op if nothing is loaded."""
+        if self._model is None and self._processor is None:
+            return
+        self._model = None
+        self._processor = None
+        try:
+            import gc
+
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def _load_audio(self, path: str):
         """Load audio at the processor's expected sampling rate (Qwen2.5-Omni
         uses 16 kHz)."""

@@ -104,19 +104,30 @@ class _Handler(BaseHTTPRequestHandler):
                     recognize = None
                 # For the ACE-Step captioner, let the UI pick the in-flight
                 # quantization mode (full/8bit/4bit) by setting the env var the
-                # captioner reads. Note: the captioner is a process singleton,
-                # so this takes effect on the first ace-step add and the model
-                # stays loaded at that mode for the rest of the server's life.
+                # captioner reads. We free the model after each import (below),
+                # so a different mode picked next time actually takes effect.
                 if recognize == "ace-step":
                     load = (payload.get("captioner_load") or "").strip()
                     if load:
                         os.environ["ACESTEP_CAPTIONER_LOAD"] = load
-                data = library_mod.add(
-                    payload["name"], payload["path"],
-                    tags=[t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()] or None,
-                    analyze=bool(payload.get("analyze")),
-                    recognize=recognize,
-                )
+                try:
+                    data = library_mod.add(
+                        payload["name"], payload["path"],
+                        tags=[t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()] or None,
+                        analyze=bool(payload.get("analyze")),
+                        recognize=recognize,
+                    )
+                finally:
+                    # Release the captioner's VRAM once the scan is done (even on
+                    # failure) — the server is long-lived and would otherwise pin
+                    # ~6–22 GB indefinitely. Set MENDELL_CAPTIONER_KEEP_WARM=1 to
+                    # keep it resident for fast back-to-back imports instead.
+                    if recognize == "ace-step" and not os.environ.get("MENDELL_CAPTIONER_KEEP_WARM"):
+                        try:
+                            from .ace.captioner import get_captioner
+                            get_captioner().unload()
+                        except Exception:
+                            pass
                 self._send_json({"ok": True, "data": data})
             else:
                 self._send(404, b"not found", "text/plain")

@@ -225,6 +225,19 @@ def test_captioner_full_mode_needs_no_quant_config():
     assert AceCaptioner()._quant_config("full") is None
 
 
+def test_captioner_unload_clears_model():
+    from mendell.ace.captioner import AceCaptioner
+
+    cap = AceCaptioner()
+    cap.unload()  # no-op when nothing loaded
+    assert cap._model is None and cap._processor is None
+    # Simulate a loaded model; unload must drop both references.
+    cap._model = object()
+    cap._processor = object()
+    cap.unload()
+    assert cap._model is None and cap._processor is None
+
+
 def test_captioner_max_audio_seconds_parsing(monkeypatch):
     from mendell.ace.captioner import AceCaptioner
 
