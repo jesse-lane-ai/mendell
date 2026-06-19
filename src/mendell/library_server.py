@@ -36,6 +36,33 @@ def _json_bytes(obj: object) -> bytes:
     return json.dumps(obj).encode("utf-8")
 
 
+_EXPORT_EXTS = (".wav", ".mp3", ".flac", ".ogg")
+
+
+def _project_export(project_path: str) -> Path | None:
+    """Return the most recently rendered export file for a project, or None.
+
+    Looks in ``<project>/export/`` (the default `mendell export` output dir) and
+    picks the newest audio file — so the UI previews the latest render.
+    """
+    export_dir = Path(project_path).expanduser() / "export"
+    if not export_dir.is_dir():
+        return None
+    candidates = [p for p in export_dir.iterdir()
+                  if p.is_file() and p.suffix.lower() in _EXPORT_EXTS]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _projects_with_preview() -> dict:
+    """`registry.list_projects()` plus a `has_export` flag per project."""
+    data = registry_mod.list_projects()
+    for p in data.get("projects", []):
+        p["has_export"] = _project_export(p["path"]) is not None
+    return data
+
+
 class _Handler(BaseHTTPRequestHandler):
     # Quieter than the default per-request stderr logging.
     def log_message(self, *args):  # noqa: D401, ANN002
@@ -77,7 +104,9 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/libraries":
                 self._send_json({"ok": True, "data": library_mod.list_entries()})
             elif path == "/api/projects":
-                self._send_json({"ok": True, "data": registry_mod.list_projects()})
+                self._send_json({"ok": True, "data": _projects_with_preview()})
+            elif path == "/api/projects/audio":
+                self._serve_project_audio(query)
             elif path == "/api/beat/options":
                 self._send_json({"ok": True, "data": {
                     "styles": sorted(beat_mod.STYLES),
@@ -121,6 +150,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "data": self._beat_make(payload)})
             elif parsed.path == "/api/beat/random32":
                 self._send_json({"ok": True, "data": self._beat_random32(payload)})
+            elif parsed.path == "/api/projects/render":
+                from . import engine as engine_mod
+                project_dir = Path(payload["path"]).expanduser()
+                data = engine_mod.export(project_dir, format=payload.get("format") or "wav")
+                self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/add":
                 # recognize: a backend name, "" (filename-only), or "__default__"
                 # (honor the library.recognizer config setting, like the CLI).
@@ -237,7 +271,20 @@ class _Handler(BaseHTTPRequestHandler):
         if target is None or not target.is_file():
             self._send(404, b"audio not found", "text/plain")
             return
+        self._stream_file(target)
 
+    def _serve_project_audio(self, q: dict):
+        path = q.get("path", [None])[0]
+        if not path:
+            self._send(400, b"missing path", "text/plain")
+            return
+        target = _project_export(path)
+        if target is None:
+            self._send(404, b"no rendered export - render the project first", "text/plain")
+            return
+        self._stream_file(target)
+
+    def _stream_file(self, target: Path):
         data = target.read_bytes()
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         total = len(data)
@@ -626,12 +673,37 @@ async function loadProjects() {
       <td class="ref muted">${esc(p.path||"")}</td>
       <td class="muted">${fmtDate(p.last_updated)}</td>
       <td class="num">
+        ${p.has_export
+          ? `<button class="play" title="preview latest render" onclick="playProject(this,'${path}')">▶</button>`
+          : ''}
+        <button title="render &amp; preview" onclick="renderProject(this,'${path}')">⏺</button>
         <button title="refresh from project.toml" onclick="syncProject('${path}')">↻</button>
         <button title="remove from registry" onclick="removeProject('${path}','${esc(p.name||"").replace(/'/g,"\\'")}')">✕</button>
       </td>
     </tr>`;
   }
   el.innerHTML = html + "</tbody></table>";
+}
+
+function playProject(btn, path) {
+  if (curBtn === btn) { player.pause(); btn.classList.remove("on"); btn.textContent="▶"; curBtn=null; return; }
+  if (curBtn) { curBtn.classList.remove("on"); curBtn.textContent="▶"; }
+  player.src = "/api/projects/audio?path=" + encodeURIComponent(path);
+  player.play();
+  btn.classList.add("on"); btn.textContent="⏸"; curBtn = btn;
+}
+
+async function renderProject(btn, path) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    await api("/api/projects/render", { method:"POST", body: JSON.stringify({path}) });
+    await loadProjects();
+    // Auto-play the fresh render.
+    player.src = "/api/projects/audio?path=" + encodeURIComponent(path) + "&t=" + Date.now();
+    player.play();
+  } catch(e) { alert(e.message); }
+  finally { btn.disabled = false; btn.textContent = label; }
 }
 
 async function syncProject(path) {
