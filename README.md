@@ -112,11 +112,42 @@ pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
   (~22 GB) from the Hugging Face Hub into the HF cache (`~/.cache/huggingface`, or
   `HF_HOME`) and reuses it thereafter. It needs only `transformers` + `torch` (no
   generation checkpoint). Override the model with `ACESTEP_CAPTIONER_MODEL`.
-  - The captioner is ~11B params. To fit a normal GPU, set
-    `ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight bitsandbytes
-    quantization (CUDA-only; `pip install bitsandbytes accelerate`) — ~6–7 GB / ~11 GB VRAM
-    instead of ~22 GB. This shrinks VRAM only; the full fp16 weights are still
-    downloaded and quantized as they load.
+  - The captioner is ~11B params (~22 GB in bf16). On a 24 GB card the default
+    `ACESTEP_CAPTIONER_LOAD=full` fits and is the **fastest** path. On smaller
+    cards set `ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight
+    bitsandbytes quantization (CUDA-only; `pip install bitsandbytes accelerate`)
+    — ~6–7 GB / ~11 GB VRAM instead of ~22 GB. Quantization shrinks VRAM but is
+    *slower* per token than `full`, so prefer `full` whenever it fits.
+
+  **Speed.** Captioning is the slow part of a scan, and three things drive it:
+
+  - **Batching is the main lever.** The captioner has a large fixed per-call
+    cost (a multimodal-prefill + decode loop that's CPU-launch-bound, so it's
+    roughly the same whether the batch holds 1 file or 16). `ACESTEP_CAPTIONER_BATCH`
+    (default 8) sets files per call; per-file time falls almost linearly with it.
+    On a 24 GB card `full` + batch 16 captions one-shots at **~0.3–0.7 s/file**
+    (vs ~7 s/file unbatched in 4bit). Lower the batch if you OOM on long loops.
+    Batches are **grouped by clip length** automatically, so one long loop only
+    inflates the padding of its own batch instead of a batch full of short hits.
+  - **Audio length is capped** to the longest clip actually in the batch (or
+    `ACESTEP_CAPTIONER_AUDIO_SECONDS`, default 30) instead of the model's fixed
+    ~300 s window — so a half-second drum hit no longer pays 300 s of audio-encoder
+    compute. Captions are unchanged (the model already masks the padding); raise
+    the cap only if you caption long loops and want the encoder to hear all of them.
+  - One-time costs (model load, first-call CUDA warmup) amortize over the library,
+    so a folder of a handful of files looks slower per-file than a big scan.
+
+  **Resumable.** A scan checkpoints each file's verdict to the recognition cache
+  as it lands (committed per file), so a crash, OOM, or Ctrl-C partway through a
+  thousands-of-files drop loses only the in-flight batch. Re-running
+  `library add` (or `library scan`) skips everything already captioned and
+  resumes from where it stopped — unchanged files are matched by path + mtime.
+
+  **VRAM after a scan.** The CLI frees the model on process exit. The web UI
+  (`mendell library serve`) frees it after **each** import — VRAM returns to
+  baseline once a scan finishes. Set `MENDELL_CAPTIONER_KEEP_WARM=1` before
+  launching the server to keep the model resident instead (faster back-to-back
+  imports, at the cost of pinning ~6–22 GB until the server stops).
 
 - **Generation (`mendell ace ...`) is manual download.** It loads DiT + LM
   checkpoints from a directory you point at — it never auto-fetches. Download the

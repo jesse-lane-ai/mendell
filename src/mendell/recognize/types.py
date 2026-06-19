@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 # Coarse category vocabulary, split by `kind` — a recognizer picks from the
 # set matching the file's already-known `kind` (one-shot vs loop). `unknown`
@@ -67,6 +67,13 @@ class Recognition:
     caption: str | None = None  # free-text description, when a backend produces one (e.g. ace-step)
 
 
+# Optional streaming sink: a backend may call this as each file's verdict is
+# ready (in any order), letting the caller checkpoint progress for a long scan
+# so a crash can resume instead of restarting. Purely advisory — the full list
+# is still returned from ``recognize``.
+ResultSink = Callable[[FileProbe, "Recognition | None"], None]
+
+
 class Recognizer(Protocol):
     """A pluggable content-based recognition backend.
 
@@ -74,8 +81,14 @@ class Recognizer(Protocol):
     model backends can amortize load/round-trips. Returning ``None`` for an
     item means "defer to the filename guess" (e.g. the backend couldn't form
     an opinion for that file).
+
+    A backend may accept an optional ``on_result`` sink and invoke it per file
+    as verdicts land (used for incremental checkpointing); backends that don't
+    support streaming simply omit the parameter.
     """
 
     name: str
 
-    def recognize(self, items: list[FileProbe]) -> list[Recognition | None]: ...
+    def recognize(
+        self, items: list[FileProbe], on_result: "ResultSink | None" = None
+    ) -> list[Recognition | None]: ...

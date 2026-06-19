@@ -13,6 +13,7 @@ path>`` reference — or a bare registered name — into a real filesystem path.
 
 from __future__ import annotations
 
+import inspect
 import os
 import sqlite3
 import time
@@ -192,6 +193,10 @@ def _migrate(con: sqlite3.Connection) -> None:
         );
     """)
     _add_column_if_missing(con, "recognition_cache", "caption", "TEXT")
+    # NB: we deliberately do *not* auto-delete cache rows whose library is
+    # absent — an in-progress scan checkpoints verdicts (keyed by the stable
+    # library name) before its `libraries` row is written, so those "orphans"
+    # are pending resume data. `remove()` cleans a library's cache explicitly.
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +288,21 @@ def _load_recognition_cache(con: sqlite3.Connection, library_name: str, backend:
         (library_name, backend),
     ).fetchall()
     return {row["rel_path"]: row for row in rows}
+
+
+def _upsert_recognition_cache_row(
+    con: sqlite3.Connection, library_name: str, backend: str, entry: dict[str, Any]
+) -> None:
+    """Insert-or-replace a single file's cached verdict (keyed by
+    ``library_name, rel_path, backend``). Used by the streaming checkpoint path
+    so each batch's results are durable before the next batch runs."""
+    con.execute(
+        "INSERT OR REPLACE INTO recognition_cache "
+        "(library_name, rel_path, mtime, backend, category, instruments, confidence, caption) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (library_name, entry["rel_path"], entry["mtime"], backend, entry["category"],
+         ",".join(entry["instruments"]), entry["confidence"], entry.get("caption")),
+    )
 
 
 def _write_recognition_cache(con: sqlite3.Connection, library_name: str, backend: str, entries: list[dict[str, Any]]) -> None:
@@ -379,7 +399,43 @@ def _index_folder(
                 FileProbe(path=base[i]["file_path"], filename=base[i]["file_path"].name, duration=base[i]["duration"], kind=base[i]["kind"])
                 for i in to_recognize_idx
             ]
-            fresh = recognizer.recognize(probes)
+
+            # Stream verdicts into the recognition cache as they land, so a long
+            # scan (e.g. the ACE-Step captioner over thousands of files) is
+            # resumable: a crash leaves the completed files cached, and a re-run
+            # skips them. Only wired when the backend supports `on_result` and a
+            # cache is available; the per-file metadata (rel_path/mtime) needed
+            # for the cache row is looked up by the probe's path.
+            on_result = None
+            can_checkpoint = (
+                con is not None and library_name is not None
+                and "on_result" in inspect.signature(recognizer.recognize).parameters
+            )
+            if can_checkpoint:
+                probe_meta = {
+                    base[i]["file_path"]: (str(base[i]["file_path"].relative_to(folder)), base[i]["mtime"])
+                    for i in to_recognize_idx
+                }
+                def on_result(probe: "FileProbe", recognition: "Recognition | None") -> None:
+                    if recognition is None:
+                        return
+                    rel_mtime = probe_meta.get(probe.path)
+                    if rel_mtime is None or rel_mtime[1] is None:
+                        return
+                    rel, mtime = rel_mtime
+                    _upsert_recognition_cache_row(con, library_name, recognize, {
+                        "rel_path": rel, "mtime": mtime, "category": recognition.category,
+                        "instruments": recognition.instruments,
+                        "confidence": recognition.confidence, "caption": recognition.caption,
+                    })
+                    # Commit each file's checkpoint immediately: captioning is
+                    # seconds/file so a per-file commit (a few ms) is free, and
+                    # it minimises lost work if the scan dies mid-batch. Already-
+                    # committed rows survive `_conn`'s rollback-on-error.
+                    con.commit()
+
+            kwargs = {"on_result": on_result} if can_checkpoint else {}
+            fresh = recognizer.recognize(probes, **kwargs)
             for i, recognition in zip(to_recognize_idx, fresh):
                 recognitions[i] = recognition
 
@@ -554,6 +610,9 @@ def remove(name: str) -> dict[str, Any]:
     with _conn() as con:
         _require_library(con, name)
         con.execute("DELETE FROM libraries WHERE name = ?", (name,))
+        # `files` cascades via its FK, but `recognition_cache` has none — drop
+        # its rows explicitly so a removed library leaves no orphaned verdicts.
+        con.execute("DELETE FROM recognition_cache WHERE library_name = ?", (name,))
     return {"removed": name}
 
 

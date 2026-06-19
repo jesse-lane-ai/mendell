@@ -340,11 +340,44 @@ pip install transformers torch                 # captioner deps (no ACE-Step che
 mendell library add <name> <folder> --recognize ace-step
 ```
 
-The captioner is an ~11B model (~22 GB in fp16). To run it on a normal GPU, set
-`ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight bitsandbytes
-quantization (CUDA-only; `pip install bitsandbytes accelerate`) — this shrinks it to
-~6–7 GB / ~11 GB by quantizing only the LLM tower, leaving the audio encoder at
-full precision. Default is `full`.
+The captioner is an ~11B model (~22 GB in bf16). The default
+`ACESTEP_CAPTIONER_LOAD=full` is the fastest path and fits a 24 GB card; on
+smaller GPUs set `ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight
+bitsandbytes quantization (CUDA-only; `pip install bitsandbytes accelerate`) —
+~6–7 GB / ~11 GB by quantizing only the LLM tower. Quantization trades speed for
+VRAM, so prefer `full` when it fits.
+
+**Captioning speed** is governed by three knobs:
+
+- `ACESTEP_CAPTIONER_BATCH` (default 8) — files per `generate()` call. The
+  captioner's per-call cost is largely fixed (a CPU-launch-bound decode loop
+  that's about the same for 1 file or 16), so batching is the dominant lever:
+  per-file time falls roughly linearly with batch size. `full` + batch 16 on a
+  24 GB card reaches ~0.3–0.7 s/file for one-shots (vs ~7 s/file unbatched 4bit).
+  Files are grouped by length before batching, so a long loop only inflates the
+  mel padding of its own batch rather than a batch of short one-shots.
+- `ACESTEP_CAPTIONER_AUDIO_SECONDS` (default 30) — caps how much of each clip
+  reaches the audio encoder. The model otherwise pads every clip's mel to a
+  fixed ~300 s window, so short samples pay a huge constant encoder cost; the cap
+  shrinks the mel to the batch's real audio length. Captions are unchanged (the
+  padding was already masked).
+- `ACESTEP_CAPTIONER_MAX_TOKENS` (default 96) / `ACESTEP_CAPTIONER_PROMPT` —
+  caption length / instruction. Decode stops at the model's natural EOS well
+  before the cap, so these mostly bound worst case rather than typical speed.
+
+One-time costs (model load, first-call CUDA warmup) amortize over the library, so
+a handful of files reads slower per-file than a large scan.
+
+**Resumable scans.** Recognition verdicts are committed to the `recognition_cache`
+per file as they're produced, so a long scan that dies partway (crash, OOM,
+Ctrl-C) keeps its completed work. Re-running `library add`/`library scan` matches
+unchanged files by `(rel_path, mtime)` and re-recognizes only the remainder —
+resume is automatic, no extra flag. `library remove` clears a library's cache.
+
+**VRAM lifecycle.** The CLI frees the captioner on process exit. The web UI
+(`mendell library serve`) frees it after each ace-step import, so VRAM returns to
+baseline between scans. Launch the server with `MENDELL_CAPTIONER_KEEP_WARM=1` to
+keep the model resident for fast back-to-back imports instead.
 
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of

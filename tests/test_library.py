@@ -436,6 +436,66 @@ def test_recognize_caption_is_persisted_and_surfaced(lib_config, tmp_path, fake_
     assert f2["pack/weird-thing.wav"]["caption"] == "a dry, snappy percussion hit"
 
 
+class _StreamingRecognizer:
+    """A recognizer that streams per-file verdicts via ``on_result`` and can be
+    told to crash after N files — to exercise incremental checkpoint + resume."""
+
+    name = "stream"
+    asked: list[list[str]] = []   # filenames passed to each recognize() call
+    crash_after = None            # raise once this many files have streamed
+
+    def recognize(self, items, on_result=None):
+        _StreamingRecognizer.asked.append([i.filename for i in items])
+        out = []
+        for n, item in enumerate(items, 1):
+            rec = Recognition(category="perc", instruments=["drums"],
+                              source="stream", confidence=0.9,
+                              caption=f"caption for {item.filename}")
+            if on_result is not None:
+                on_result(item, rec)
+            out.append(rec)
+            if self.crash_after is not None and n >= self.crash_after:
+                raise RuntimeError("simulated crash mid-scan")
+        return out
+
+
+def test_recognize_checkpoints_and_resumes(lib_config, tmp_path, monkeypatch):
+    """A crash mid-scan leaves completed files cached; the re-run only
+    recognizes the stragglers and finishes the library."""
+    monkeypatch.setitem(_BACKENDS, "stream", _StreamingRecognizer)
+    _StreamingRecognizer.asked = []
+
+    folder = tmp_path / "pack"
+    for i in range(5):
+        _write_wav(folder / f"s{i}.wav", 0.2)
+
+    # First run streams 3 files (committed per-file), then dies on the 3rd.
+    _StreamingRecognizer.crash_after = 3
+    with pytest.raises(Exception):
+        library.add("pack", str(folder), recognize="stream")
+
+    # The 3 streamed verdicts survived the rollback in the recognition cache.
+    with library._conn() as con:
+        cached = {r["rel_path"] for r in con.execute(
+            "SELECT rel_path FROM recognition_cache WHERE library_name=? AND backend=?",
+            ("pack", "stream")).fetchall()}
+    assert len(cached) == 3
+
+    # Resume: a clean run recognizes only the files not already cached.
+    _StreamingRecognizer.asked = []
+    _StreamingRecognizer.crash_after = None
+    library.add("pack", str(folder), recognize="stream")
+    resumed = _StreamingRecognizer.asked[0]
+    assert len(resumed) == 2  # only the two uncached stragglers
+    assert set(resumed).isdisjoint(cached)
+
+    # Library is complete and every file carries its caption.
+    files = {x["ref"]: x for x in library.show("pack")["files"]}
+    assert len(files) == 5
+    assert all(files[f"pack/s{i}.wav"]["caption"] == f"caption for s{i}.wav"
+               for i in range(5))
+
+
 def test_recognize_none_omits_new_columns(lib_config, tmp_path, fake_recognizer):
     """Without --recognize, the new columns are absent — unchanged behavior."""
     folder = tmp_path / "pack"

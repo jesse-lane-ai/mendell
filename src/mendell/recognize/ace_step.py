@@ -22,13 +22,52 @@ import subprocess
 import sys
 import time
 
-from .types import INSTRUMENT_VOCAB, LOOP_CATEGORIES, ONESHOT_CATEGORIES, FileProbe, Recognition
+from .types import (
+    INSTRUMENT_VOCAB,
+    LOOP_CATEGORIES,
+    ONESHOT_CATEGORIES,
+    FileProbe,
+    Recognition,
+    ResultSink,
+)
 
 NAME = "ace-step"
 
 # A caption hit on the taxonomy is a strong but text-derived signal.
 CAPTION_CONFIDENCE = 0.7
 INSTRUMENT_CAP = 4
+
+
+def _batch_size() -> int:
+    """Files per captioner ``generate()`` call (env ``ACESTEP_CAPTIONER_BATCH``,
+    default 8). Clamped to >= 1; a non-integer value falls back to the default.
+
+    The captioner has a large fixed per-call cost (multimodal prefill) that is
+    roughly batch-independent, so batching is the dominant throughput lever:
+    per-file time falls ~linearly with batch size until the GPU saturates. With
+    the audio-encoder padding capped to real clip length (see
+    ``AceCaptioner._max_audio_seconds``) the extra VRAM per batched file is just
+    a small KV cache, so a moderate default is safe; lower it if you OOM on long
+    loops or a small card."""
+    try:
+        return max(1, int(os.environ.get("ACESTEP_CAPTIONER_BATCH", "8")))
+    except ValueError:
+        return 8
+
+
+def _plan_batches(items: list[FileProbe], batch_size: int) -> list[list[int]]:
+    """Group item indices into batches of up to ``batch_size``, sorted by
+    duration (unknown = 0) so similar-length clips ride together.
+
+    The captioner pads each batch's mel to its longest clip, so grouping by
+    length keeps a long loop from inflating the padding of a batch of short
+    one-shots — but only when a library is large enough to span multiple
+    batches. For a folder that fits in a single batch this is a no-op, which is
+    what we want: the captioner's cost is dominated by a fixed per-call overhead,
+    so the *fewest* batches is fastest (the small mel-activation saving from
+    tighter padding doesn't come close to paying for an extra call)."""
+    order = sorted(range(len(items)), key=lambda idx: items[idx].duration or 0.0)
+    return [order[i:i + batch_size] for i in range(0, len(order), batch_size)]
 
 
 def _gpu_mem_mib() -> int | None:
@@ -94,11 +133,13 @@ class AceStepRecognizer:
         # (cheap import check — does not download the model).
         self._captioner.check_available()
 
-    def recognize(self, items: list[FileProbe]) -> list[Recognition | None]:
-        # Captioning is the slow part (seconds per file), and the whole add
-        # commits in one transaction, so emit per-file progress to stderr — it
-        # never touches the JSON envelope on stdout and shows up in both the CLI
-        # and the `library serve` terminal. Silence with MENDELL_QUIET=1.
+    def recognize(self, items: list[FileProbe],
+                  on_result: "ResultSink | None" = None) -> list[Recognition | None]:
+        # Captioning is the slow part (seconds per file). Emit per-file progress
+        # to stderr — it never touches the JSON envelope on stdout and shows up
+        # in both the CLI and the `library serve` terminal. Silence with
+        # MENDELL_QUIET=1. ``on_result`` (when given) is called as each file's
+        # verdict lands so the caller can checkpoint a long scan for resume.
         #
         # Set MENDELL_ACE_ANALYTICS=<path> to also append a JSONL analytics
         # record per file (timing, caption, derived tags, VRAM) plus load/summary
@@ -122,58 +163,113 @@ class AceStepRecognizer:
             "load_mode": self._captioner._load_mode(), "vram_mib": _gpu_mem_mib(),
         })
 
-        results: list[Recognition | None] = []
-        captioned = deferred = 0
+        results: list[Recognition | None] = [None] * total
+        counts = {"captioned": 0, "deferred": 0}
+        batch_size = _batch_size()
         run_start = time.time()
-        for i, item in enumerate(items, start=1):
-            t0 = time.time()
-            try:
-                caption = self._captioner.caption(str(item.path))
-            except Exception as err:
-                deferred += 1
-                self._progress(i, total, item.filename, f"deferred ({type(err).__name__})")
-                analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
-                                "seconds": round(time.time() - t0, 2), "deferred": f"{type(err).__name__}: {err}"})
-                results.append(None)  # defer to filename guess
-                continue
-            seconds = round(time.time() - t0, 2)
-            if not caption:
-                deferred += 1
-                self._progress(i, total, item.filename, "deferred (empty caption)")
-                analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
-                                "seconds": seconds, "deferred": "empty caption"})
-                results.append(None)
-                continue
 
-            cats = _categories(item.kind)
-            matched_cats = _match_vocab(caption, cats)
-            category = matched_cats[0] if matched_cats else cats[0]
-            instruments = _match_vocab(caption, INSTRUMENT_VOCAB)[:INSTRUMENT_CAP]
-            confidence = CAPTION_CONFIDENCE if matched_cats else 0.3
-            captioned += 1
+        # Plan batches length-first: the captioner pads each batch's mel to its
+        # longest clip, so similar-length clips ride together (a long loop only
+        # slows its own batch). Output order is preserved by scattering results
+        # back to each item's input index.
+        batches = _plan_batches(items, batch_size)
+        analytics.emit({"event": "config", "batch_size": batch_size,
+                        "num_batches": len(batches), "length_bucketed": True})
 
-            self._progress(i, total, item.filename, f"{seconds}s -> {category}")
-            analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
-                            "kind": item.kind, "seconds": seconds, "category": category,
-                            "category_matched": bool(matched_cats), "instruments": instruments,
-                            "confidence": confidence, "vram_mib": _gpu_mem_mib(),
-                            "caption": caption})
-            results.append(
-                Recognition(
-                    category=category,
-                    instruments=instruments,
-                    source=NAME,
-                    confidence=confidence,
-                    caption=caption,
+        done = 0
+        for batch_no, idx_chunk in enumerate(batches, start=1):
+            chunk = [items[idx] for idx in idx_chunk]
+            # The longest clip in the batch sets the mel padding, so surface it
+            # — makes the cost of a loop-heavy vs one-shot batch visible.
+            durs = [c.duration for c in chunk if c.duration is not None]
+            t_batch = time.time()
+            captions = self._caption_chunk(chunk)
+            analytics.emit({"event": "batch", "batch": batch_no, "size": len(chunk),
+                            "max_duration": round(max(durs), 2) if durs else None,
+                            "seconds": round(time.time() - t_batch, 2),
+                            "vram_mib": _gpu_mem_mib()})
+            for idx, item, caption in zip(idx_chunk, chunk, captions):
+                done += 1
+                results[idx] = self._record_file(
+                    done, total, item, caption, analytics, counts
                 )
-            )
+                if on_result is not None:
+                    # Stream the verdict out per file so the caller can
+                    # checkpoint a long scan. Best-effort: a sink failure must
+                    # not abort captioning (we still return the full list).
+                    try:
+                        on_result(item, results[idx])
+                    except Exception:
+                        pass
 
-        analytics.emit({"event": "summary", "total_files": total, "captioned": captioned,
-                        "deferred": deferred, "inference_seconds": round(time.time() - run_start, 2),
-                        "avg_seconds_per_file": round((time.time() - run_start) / max(total, 1), 2),
+        elapsed = time.time() - run_start
+        analytics.emit({"event": "summary", "total_files": total,
+                        "captioned": counts["captioned"], "deferred": counts["deferred"],
+                        "batch_size": batch_size, "inference_seconds": round(elapsed, 2),
+                        "avg_seconds_per_file": round(elapsed / max(total, 1), 2),
                         "vram_mib": _gpu_mem_mib()})
         analytics.close()
         return results
+
+    def _caption_chunk(self, chunk: list[FileProbe]) -> list[str | None]:
+        """Caption a batch, returning one entry per item (``None`` marks a
+        failure to defer). A whole-batch error is retried file-by-file so one
+        bad file can't sink the rest of the batch."""
+        if len(chunk) == 1:
+            try:
+                return [self._captioner.caption(str(chunk[0].path))]
+            except Exception:
+                return [None]
+        try:
+            return list(self._captioner.caption_batch([str(c.path) for c in chunk]))
+        except Exception:
+            out: list[str | None] = []
+            for c in chunk:
+                try:
+                    out.append(self._captioner.caption(str(c.path)))
+                except Exception:
+                    out.append(None)
+            return out
+
+    def _record_file(self, i: int, total: int, item: FileProbe,
+                     caption: str | None, analytics: "_Analytics",
+                     counts: dict) -> Recognition | None:
+        """Map one file's caption onto the taxonomy, emit progress/analytics,
+        and return its ``Recognition`` (or ``None`` to defer to the filename
+        guess)."""
+        if caption is None:
+            counts["deferred"] += 1
+            self._progress(i, total, item.filename, "deferred (caption error)")
+            analytics.emit({"event": "file", "i": i, "total": total,
+                            "file": item.filename, "deferred": "caption error"})
+            return None
+        if not caption:
+            counts["deferred"] += 1
+            self._progress(i, total, item.filename, "deferred (empty caption)")
+            analytics.emit({"event": "file", "i": i, "total": total,
+                            "file": item.filename, "deferred": "empty caption"})
+            return None
+
+        cats = _categories(item.kind)
+        matched_cats = _match_vocab(caption, cats)
+        category = matched_cats[0] if matched_cats else cats[0]
+        instruments = _match_vocab(caption, INSTRUMENT_VOCAB)[:INSTRUMENT_CAP]
+        confidence = CAPTION_CONFIDENCE if matched_cats else 0.3
+        counts["captioned"] += 1
+
+        self._progress(i, total, item.filename, f"-> {category}")
+        analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
+                        "kind": item.kind, "category": category,
+                        "category_matched": bool(matched_cats), "instruments": instruments,
+                        "confidence": confidence, "vram_mib": _gpu_mem_mib(),
+                        "caption": caption})
+        return Recognition(
+            category=category,
+            instruments=instruments,
+            source=NAME,
+            confidence=confidence,
+            caption=caption,
+        )
 
     @staticmethod
     def _progress(done: int, total: int, filename: str, note: str) -> None:
