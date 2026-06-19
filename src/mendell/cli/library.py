@@ -114,6 +114,21 @@ def search(query, library_name, tag, category, kind, instrument, bpm):
     return data, data
 
 
+@library.command("serve")
+@click.option("--host", default="127.0.0.1", help="Interface to bind (default: localhost only).")
+@click.option("--port", type=int, default=8765, help="Port to listen on (default: 8765).")
+@click.option("--no-open", "no_open", is_flag=True, default=False, help="Don't auto-open a browser.")
+def serve(host, port, no_open):
+    """Launch a local web UI to browse, audition, and manage the library.
+
+    Serves a single ``library.html`` page (stdlib HTTP server, no extra deps)
+    that lists every registered library, plays samples in the browser, and lets
+    you search, re-scan, add, and unregister folders. Runs until Ctrl-C.
+    """
+    from .. import library_server
+    library_server.serve(host=host, port=port, open_browser=not no_open)
+
+
 @library.command("remove")
 @click.argument("name")
 @json_option

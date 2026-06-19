@@ -160,7 +160,7 @@ def test_heuristic_recognizer_defers_on_unreadable_file():
 # --- registry -------------------------------------------------------------
 
 def test_list_backends():
-    assert list_backends() == ["clap", "gemini-embedding", "gemini-generative", "heuristic"]
+    assert list_backends() == ["ace-step", "clap", "gemini-embedding", "gemini-generative", "heuristic"]
 
 
 def test_get_recognizer_unknown_backend_raises():
@@ -184,6 +184,42 @@ def test_gemini_embedding_missing_dependency_raises_actionable_error(monkeypatch
         get_recognizer("gemini-embedding")
 
 
+def test_ace_step_backend_missing_dependency_raises_actionable_error(monkeypatch):
+    # Simulate `transformers` being unavailable: the captioner's dependency
+    # check should surface an actionable install hint at selection time.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "transformers" or name.startswith("transformers."):
+            raise ImportError("No module named 'transformers'", name="transformers")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(BadInputError, match=r"pip install transformers"):
+        get_recognizer("ace-step")
+
+
 def test_gemini_generative_missing_dependency_raises_actionable_error():
     with pytest.raises(BadInputError, match=r"pip install 'mendell\[gemini\]'"):
         get_recognizer("gemini-generative")
+
+
+def test_captioner_load_mode_validates(monkeypatch):
+    from mendell.ace.captioner import AceCaptioner
+
+    cap = AceCaptioner()
+    for mode in ("full", "8bit", "4bit"):
+        monkeypatch.setenv("ACESTEP_CAPTIONER_LOAD", mode)
+        assert cap._load_mode() == mode
+    monkeypatch.setenv("ACESTEP_CAPTIONER_LOAD", "nope")
+    with pytest.raises(BadInputError, match=r"ACESTEP_CAPTIONER_LOAD"):
+        cap._load_mode()
+
+
+def test_captioner_full_mode_needs_no_quant_config():
+    from mendell.ace.captioner import AceCaptioner
+
+    # `full` must not require bitsandbytes.
+    assert AceCaptioner()._quant_config("full") is None

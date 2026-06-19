@@ -244,6 +244,108 @@ mendell beat random32 <name> [--pattern <archetype>] [--bpm N] [--key A-G]
 `beat random32` produces a real project (under `<name>/`) you can keep editing —
 re-mix, re-arrange, swap loops, automate — not a one-off WAV.
 
+### ACE-Step (generative audio)
+
+`mendell ace ...` wraps the [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5)
+open model family — text-to-music generation, editing, source separation, and
+audio understanding. Like the `clap`/`gemini` recognizers it is **opt-in and
+heavyweight (GPU-oriented)**: ACE-Step isn't on PyPI, so install it from source
+and point Mendell at a downloaded checkpoint via environment variables. Any `ace`
+command without those raises an actionable error instead of a stack trace.
+
+```bash
+pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
+export ACESTEP_CHECKPOINT_DIR=/path/to/checkpoints   # required
+# optional overrides: ACESTEP_DIT_CONFIG (default acestep-v15-turbo),
+#                     ACESTEP_LM_MODEL (default acestep-5Hz-lm-1.7B),
+#                     ACESTEP_DEVICE (cuda|mps|cpu|xpu), ACESTEP_LM_BACKEND
+```
+
+**Model zoo** — download checkpoints into `ACESTEP_CHECKPOINT_DIR` and select
+them with `ACESTEP_DIT_CONFIG` / `ACESTEP_LM_MODEL`. Links + index:
+[awesome-ace-step](https://github.com/ace-step/awesome-ace-step),
+[model zoo](https://github.com/ace-step/ACE-Step-1.5#-model-zoo).
+
+| DiT model | Size | VRAM | Tasks |
+|---|---|---|---|
+| `acestep-v15-turbo` *(default)* | 2B | ~4.7 GB | text2music, cover, repaint (8-step, fast) |
+| `acestep-v15-sft` | 2B | ~4.7 GB | text2music, cover, repaint (50-step) |
+| `acestep-v15-base` | 2B | ~4.7 GB | **+ extract (separation), lego, complete** |
+| `acestep-v15-xl-{turbo,sft,base}` | 4B | ≥12 GB | as above, higher fidelity |
+
+| LM model | Size | Notes |
+|---|---|---|
+| `acestep-5Hz-lm-0.6B` | 0.6B | lightweight |
+| `acestep-5Hz-lm-1.7B` *(default)* | 1.7B | recommended, full feature coverage |
+| `acestep-5Hz-lm-4B` | 4B | strongest audio understanding |
+
+> **Capability gate:** `ace separate` (and the underlying `extract`/`lego`/
+> `complete` tasks) require a **`*-base`** DiT checkpoint — `turbo`/`sft` are
+> generation-only. Point `ACESTEP_DIT_CONFIG` at `acestep-v15-base` (or
+> `-xl-base`) for separation. The recommended all-round config is
+> `acestep-v15-turbo` + `acestep-5Hz-lm-1.7B`.
+
+```bash
+# Text-to-music with full metadata control + optional reference audio. With
+# --track, the rendered file is auto-imported as an audio clip in one shot.
+mendell ace generate <project> --prompt "dusty lofi boom-bap, vinyl crackle"
+                      [--duration 30] [--bpm 90] [--key "C minor"] [--time-sig 4/4]
+                      [--lyrics "..."] [--ref ref.wav] [--batch N]
+                      [--track <name>] [--clip-name <name>] [--json]
+
+# Cover an existing track in a new style; --strength 0..1 (higher = further off)
+mendell ace cover <project> <source> --prompt "jazz piano version" [--strength 0.8] [--track ..]
+
+# Selectively regenerate a [start,end) window (seconds)
+mendell ace repaint <project> <source> --start 10 --end 20 --prompt "piano solo" [--track ..]
+
+# Add a layer over a track (multi-track / "Add Layer")
+mendell ace layer <project> <source> --prompt "a warm sub bass" [--strength 0.4] [--track ..]
+
+# Auto-generate instrumental accompaniment for a vocal
+mendell ace vocal2bgm <project> <vocal> --prompt "boom-bap drums and rhodes" [--track ..]
+
+# Source separation — one clip per stem, optionally imported onto a track
+mendell ace separate <project> <source> [--stems vocals,drums,bass,other] [--track ..]
+
+# Audio understanding: BPM, key/scale, time signature, caption
+mendell ace understand <project> <source>
+mendell ace lrc <project> <source>      # lyric timestamps
+mendell ace score <project> <source>    # quality score
+
+# LM helpers (no audio render): Simple Mode + Query Rewriting
+mendell ace simple <project> --prompt "a soft love song for a quiet evening" [--instrumental] [--language bn]
+mendell ace rewrite <project> [--caption "latin pop, reggaeton"] [--lyrics "..."] [--bpm 95]
+
+# LoRA fine-tuning is ACE-Step's one-click Gradio workflow, not a CLI call —
+# `ace lora` prints how to launch it.
+mendell ace lora
+```
+
+Generated audio lands in `<project>/generated/` and stems in `<project>/stems/`;
+passing `--track` imports the output as a placeable audio clip, so an agent can go
+from prompt → clip → arrangement without leaving the CLI.
+
+**Content recognition (`--recognize ace-step`)** — ACE-Step's purpose-built
+captioner, [`ACE-Step/acestep-captioner`](https://huggingface.co/ACE-Step/acestep-captioner)
+(a Qwen2.5-Omni-7B multimodal model), is wired in as a `library` recognition
+backend alongside `clap`/`gemini`. It needs only `transformers` + `torch` (no
+generation checkpoint — far lighter than the DiT stack); the model downloads on
+first use and is overridable via `ACESTEP_CAPTIONER_MODEL`. Its free-text caption
+is keyword-mapped onto the standard `category`/`instruments` taxonomy, so it
+fuses with filename guesses exactly like the other backends.
+
+```bash
+pip install transformers torch                 # captioner deps (no ACE-Step checkpoint needed)
+mendell library add <name> <folder> --recognize ace-step
+```
+
+The captioner is an ~11B model (~22 GB in fp16). To run it on a normal GPU, set
+`ACESTEP_CAPTIONER_LOAD=4bit` (or `8bit`) for in-flight bitsandbytes
+quantization (CUDA-only; `pip install bitsandbytes accelerate`) — this shrinks it to
+~6–7 GB / ~11 GB by quantizing only the LLM tower, leaving the audio encoder at
+full precision. Default is `full`.
+
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
 `drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,

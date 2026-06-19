@@ -62,8 +62,9 @@ class Recognition:
 
     category: str
     instruments: list[str]
-    source: str  # "heuristic" | "clap" | "gemini-embedding" | "gemini-generative"
+    source: str  # "heuristic" | "clap" | "gemini-embedding" | "gemini-generative" | "ace-step"
     confidence: float  # 0..1
+    caption: str | None = None  # free-text description, when a backend produces one (e.g. ace-step)
 
 
 class Recognizer(Protocol):
