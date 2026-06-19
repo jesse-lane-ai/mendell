@@ -16,54 +16,37 @@ def beat():
 
 @beat.command("new")
 @click.argument("name")
-@click.option("--style", type=click.Choice(sorted(beat_mod.STYLES)), required=True,
-              help="Style preset — sets tempo/key defaults and a starter drum pattern.")
-@json_option
-@command
-def new(name, style):
-    """Scaffold NAME: a project seeded with --style's tempo/key, a MIDI 'drums'
-    track routed to a sampler 'kit' track, and a looping starter drum pattern
-    placed across the arrangement — ready for `mendell kit load` and `export`.
-    """
-    parent, base = config_mod.resolve_project_parent(name)
-    data = beat_mod.new(parent, base, style=style)
-    return data, f"created beat '{base}' ({style}) at {data['project']['path']}"
-
-
-@beat.command("from-library")
-@click.argument("name")
-@click.option("--library", "library", required=True,
-              help="Sample library to pull one-shots from (see `mendell library list`).")
 @click.option("--style", type=click.Choice(sorted(beat_mod.STYLES)), default="lofi",
-              help="Groove preset — tempo/key + base drum pattern (default: lofi).")
+              help="Style preset — tempo/key defaults + base drum pattern (default: lofi).")
+@click.option("--library", "library", default=None,
+              help="Pull kit one-shots from this library only (default: all registered libraries).")
 @click.option("--bars", default=8, type=int, help="Loop length in bars (default: 8).")
 @click.option("--seed", type=int, help="Random seed for a reproducible kit + variations.")
-@click.option("--export", "export", is_flag=True, default=False,
-              help="Also render the loop to a WAV.")
+@click.option("--export", "export", is_flag=True, default=False, help="Also render the loop to a WAV.")
 @json_option
 @command
-def from_library(name, library, style, bars, seed, export):
-    """Build NAME: a drum-loop project from random one-shots in --library.
+def new(name, style, library, bars, seed, export):
+    """Scaffold NAME: a project seeded with --style's tempo/key, a MIDI 'drums'
+    track routed to a sampler 'kit' track, and a --bars-bar drum pattern.
 
-    Pulls one-shots out of the library (matched by recognized category/instrument,
-    or filename), randomly maps one per drum role onto a sampler 'kit' at the GM
-    notes the pattern plays, and writes a --bars-bar groove (bar 1 the style's
-    base, the rest humanized). Use --seed to reproduce a pick, --export to render.
+    The kit is filled with random one-shots from the sample library (matched by
+    recognized category/instrument, or filename) — across all libraries, or just
+    --library. Falls back to an empty kit (with a `kit load` hint) if the library
+    has no usable one-shots. --seed reproduces the pick; --export renders a WAV.
     """
     parent, base = config_mod.resolve_project_parent(name)
-    data = beat_mod.from_library(
-        parent, base, library=library, style=style, bars=bars, seed=seed, export=export,
-    )
+    data = beat_mod.new(parent, base, style=style, library=library, bars=bars, seed=seed, export=export)
     kit_n = len(data["kit"])
-    silent = f", silent: {','.join(data['silent_notes'])}" if data["silent_notes"] else ""
+    if kit_n:
+        silent = f", silent: {','.join(data['silent_notes'])}" if data["silent_notes"] else ""
+        kit_msg = f"{kit_n} kit samples from library{silent}"
+    else:
+        kit_msg = "empty kit (no library one-shots — run `kit load`)"
     tail = ""
     if export:
         out = data["export"].get("out") or data["export"].get("path")
         tail = f" -> {out}"
-    return data, (
-        f"built '{base}' ({style}, {bars} bars) from library '{library}' — "
-        f"{kit_n} samples mapped{silent}{tail}"
-    )
+    return data, f"created beat '{base}' ({style}, {bars} bars) — {kit_msg}{tail}"
 
 
 @beat.command("make")
@@ -73,20 +56,23 @@ def from_library(name, library, style, bars, seed, export):
 @click.option("--key", help="Override key.")
 @click.option("--duration", default="60s", help="Target duration (e.g. 60s).")
 @click.option("--variations", default=8, type=int, help="Number of 8-bar variation sections.")
-@click.option("--kit", type=click.Path(exists=True), help="Path to one-shot folder (uses minimum 5-10 shots).")
+@click.option("--kit", type=click.Path(exists=True), help="One-shot folder override (default: pull kit from the library).")
+@click.option("--library", "library", default=None, help="Pull kit one-shots from this library only (default: all).")
 @click.option("--melody", type=click.Path(exists=True), help="Melody loop to warp and add.")
 @click.option("--bass", type=click.Path(exists=True), help="Bass loop to warp and add.")
 @click.option("--export", default="mp3", help="Export format.")
+@click.option("--seed", type=int, help="Random seed for reproducible kit + variations.")
 @json_option
 @command
-def make(name, style, bpm, key, duration, variations, kit, melody, bass, export):
-    """High-level command: create project, minimal kit load, generate variations, add loops, export."""
+def make(name, style, bpm, key, duration, variations, kit, library, melody, bass, export, seed):
+    """High-level command: create project, fill kit from the library (or --kit
+    folder), generate variations, add loops, export."""
     parent, base = config_mod.resolve_project_parent(name)
     data = beat_mod.make(
         parent, base,
         style=style, bpm=bpm, key=key, duration=duration,
-        variations=variations, kit=kit, melody=melody, bass=bass,
-        export_format=export,
+        variations=variations, kit=kit, library=library, melody=melody, bass=bass,
+        export_format=export, seed=seed,
     )
     out = data["export"].get("out") or data["export"].get("path")
     return data, (

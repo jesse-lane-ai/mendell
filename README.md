@@ -253,13 +253,14 @@ docker run --rm -v "$PWD/songs:/songs" mendell new /songs/my-song --json
 
 ## Quick start
 
-The fastest path to a finished beat — scaffold a project from a style preset,
-drop in a folder of one-shot drum samples (auto-mapped by filename), and render:
+The fastest path to a finished beat — scaffold a project from a style preset
+with a kit auto-filled from your sample library, and render:
 
 ```bash
-mendell beat new my-song --style energetic --json   # project + tracks + routing + starter pattern
-mendell kit load my-song kit ./drum-one-shots/ --json  # auto-map kick/snare/hat/... by name
-mendell export my-song --json                        # renders to my-song/export/my-song.wav
+mendell beat new my-song --style energetic --export --json   # project + routing + 8-bar pattern + library kit + WAV
+# kit is pulled from the library by default; for an ad-hoc folder instead:
+mendell kit load my-song kit ./drum-one-shots/ --json         # auto-map kick/snare/hat/... by name
+mendell export my-song --json                                 # renders to my-song/export/my-song.wav
 ```
 
 A bare project name like `my-song` is created in your **projects folder**

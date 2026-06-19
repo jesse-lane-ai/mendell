@@ -215,14 +215,22 @@ cover every case, but the 80% case — "stand up a beat skeleton" / "load a drum
 take a dozen calls. Two higher-level commands collapse that:
 
 ```bash
-# Scaffold a ready-to-go beat: project + tempo/key preset + drums(midi)->kit(sampler)
-# routing + a looping starter MIDI pattern placed across the arrangement.
-mendell beat new <name> --style lofi|dark|energetic [--json]
+# Scaffold a ready-to-PLAY beat: project + tempo/key preset + drums(midi)->kit
+# (sampler) routing + a --bars-bar pattern (bar 1 the style's base groove, later
+# bars humanized). The kit is filled from the sample library by default — random
+# one-shots per drum role (kick/snare/clap/hat/...) mapped to their General MIDI
+# notes, pulled across all libraries (or just --library; matched by recognized
+# category/instrument, else filename). Falls back to an empty kit (with a
+# `kit load` hint) if the library has none. --seed reproduces the pick + groove;
+# --export renders a WAV.
+mendell beat new <name> [--style lofi|dark|energetic] [--library <lib>]
+                 [--bars 8] [--seed N] [--export] [--json]
 
 # Auto-map a folder of one-shots onto a sampler track by filename — creates the
 # sampler track if needed. Recognized drum names (kick/snare/clap/hat/tom/crash/
 # ride/perc/...) are mapped to their General MIDI percussion notes; anything
-# else is mapped sequentially starting at --start-note (default C5).
+# else is mapped sequentially starting at --start-note (default C5). The folder
+# path for ad-hoc kits; `beat new` pulls from the library instead.
 mendell kit load <project> <track> <folder> [--start-note C5] [--json]
 
 # Generate a starter drum pattern from a style preset, write it to
@@ -230,15 +238,6 @@ mendell kit load <project> <track> <folder> [--start-note C5] [--json]
 # in one shot — uses the same General MIDI percussion notes as `beat new` /
 # `kit load`, so it composes with both. Loops by default (--no-loop to disable).
 mendell midi generate <project> <track> <clip-name> --style boom-bap|lofi|trap [--bars 1] [--no-loop] [--json]
-
-# Build an N-bar drum LOOP project from random one-shots in a sample library.
-# Pulls one-shots out of --library (matched by recognized category/instrument,
-# or filename), randomly maps one per drum role onto a sampler 'kit' at the GM
-# notes the --style pattern plays, and writes a --bars-bar groove (bar 1 = the
-# style's base, later bars humanized). Needs at least a kick or snare. --seed
-# reproduces the pick + variations; --export also renders a WAV.
-mendell beat from-library <name> --library <lib> [--style lofi|dark|energetic]
-                          [--bars 8] [--seed N] [--export] [--json]
 
 # Build a complete, editable 32-bar beat PROJECT from the sample library and
 # export it. Creates drums(midi)->kit(sampler) + bass(audio) + melody(audio)

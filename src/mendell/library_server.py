@@ -206,7 +206,19 @@ class _Handler(BaseHTTPRequestHandler):
     def _beat_new(self, payload: dict) -> dict:
         name = self._require_name(payload)
         parent, base = config_mod.resolve_project_parent(name)
-        return beat_mod.new(parent, base, style=payload.get("style") or "lofi")
+
+        def opt(key):
+            v = payload.get(key)
+            return v if (v is not None and str(v).strip() != "") else None
+
+        return beat_mod.new(
+            parent, base,
+            style=payload.get("style") or "lofi",
+            library=opt("library"),
+            bars=int(opt("bars")) if opt("bars") else 8,
+            seed=int(opt("seed")) if opt("seed") else None,
+            export=bool(payload.get("export")),
+        )
 
     def _beat_make(self, payload: dict) -> dict:
         name = self._require_name(payload)

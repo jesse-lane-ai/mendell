@@ -113,37 +113,87 @@ STYLES: dict[str, dict[str, Any]] = {
 }
 
 
-def new(parent: Path, name: str, *, style: str) -> dict[str, Any]:
+def new(
+    parent: Path,
+    name: str,
+    *,
+    style: str = "lofi",
+    library: str | None = None,
+    bars: int = 8,
+    seed: int | None = None,
+    export: bool = False,
+) -> dict[str, Any]:
+    """Scaffold a ready-to-play beat: project + tempo/key preset + a
+    drums(midi)->kit(sampler) routing + a ``bars``-bar drum pattern.
+
+    The kit is **filled from the sample library** by default — random one-shots
+    per drum role (kick/snare/clap/hat/...) mapped to their General MIDI notes,
+    pulled across all registered libraries (or a single ``library``). When the
+    library has no usable one-shots, it falls back to an empty kit and points at
+    ``kit load``. ``seed`` makes the pick + pattern variations repeatable;
+    ``export`` also renders a WAV.
+    """
     style = style.lower()
     if style not in STYLES:
         raise BadInputError(f"unknown style '{style}' (expected one of {sorted(STYLES)})")
+    if bars < 1:
+        raise BadInputError("bars must be >= 1")
     preset = STYLES[style]
+    rng = random.Random(seed)
 
-    project_dir = project_mod.create(parent, name, bpm=preset["bpm"], key=preset["key"], scale=preset["scale"], genre=style)
-
+    project_dir = project_mod.create(
+        parent, name, bpm=preset["bpm"], key=preset["key"], scale=preset["scale"], genre=style
+    )
     tracks_mod.add(project_dir, DRUM_TRACK, "midi")
     tracks_mod.add(project_dir, KIT_TRACK, "sampler")
     sampler_mod.create(project_dir, KIT_TRACK)
     routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
 
+    # Fill the kit from the library (best-effort — empty kit if none available).
+    base_pattern = preset["pattern"]
+    used_notes = {note for _, note, _, _ in base_pattern}
+    filled = _fill_kit_from_library(project_dir, KIT_TRACK, used_notes, library=library, rng=rng)
+    mapping = filled[0] if filled else []
+    silent_notes = filled[1] if filled else []
+
+    # Build a `bars`-bar pattern: bar 1 = base groove, later bars humanized for
+    # movement; only the notes that got a sample will sound.
+    combined: list[tuple[float, int, int, float]] = []
+    for bar_i in range(bars):
+        bar_pattern = base_pattern if bar_i == 0 else _humanize_pattern(base_pattern, rng)
+        for beat, note, vel, length in bar_pattern:
+            combined.append((beat + bar_i * BEATS_PER_BAR, note, vel, length))
+
     pattern_path = project_dir / "midi" / PATTERN_FILENAME
-    write_pattern_midi(pattern_path, preset["pattern"])
+    write_pattern_midi(pattern_path, combined, bars=1)
     clips_mod.import_clip(project_dir, DRUM_TRACK, PATTERN_CLIP, midi_path=str(pattern_path))
     clips_mod.set_params(project_dir, DRUM_TRACK, PATTERN_CLIP, loop=True)
-
     arrangement_mod.place(project_dir, DRUM_TRACK, PATTERN_CLIP, bar=1)
-    arrangement_mod.set_params(project_dir, length=ARRANGEMENT_BARS)
+    arrangement_mod.set_params(project_dir, length=float(bars))
 
-    return {
+    result: dict[str, Any] = {
         "project": project_mod.info(project_dir),
         "style": style,
+        "bars": bars,
+        "seed": seed,
+        "library": library,
         "tracks": [DRUM_TRACK, KIT_TRACK],
         "pattern_clip": PATTERN_CLIP,
-        "next_steps": [
+        "kit": mapping,
+        "kit_source": "library" if mapping else "empty",
+        "silent_notes": [midi_to_note_name(n) for n in silent_notes],
+    }
+    if export:
+        result["export"] = engine_mod.export(project_dir)
+    elif not mapping:
+        # No library kit — tell the user how to add one before exporting.
+        result["next_steps"] = [
             f"mendell kit load {name} {KIT_TRACK} <folder-of-one-shot-samples>",
             f"mendell export {name}",
-        ],
-    }
+        ]
+    else:
+        result["next_steps"] = [f"mendell export {name}"]
+    return result
 
 
 def _bucket_library_oneshots(matches: list[dict[str, Any]]) -> dict[int, list[str]]:
@@ -187,98 +237,37 @@ def _pick_kit(
     return chosen, silent
 
 
-def from_library(
-    parent: Path,
-    name: str,
+def _fill_kit_from_library(
+    project_dir: Path,
+    track: str,
+    used_notes: set[int],
     *,
-    library: str,
-    style: str = "lofi",
-    bars: int = 8,
-    seed: int | None = None,
-    export: bool = False,
-) -> dict[str, Any]:
-    """Build a drum-loop project from random one-shots in a sample library.
+    library: str | None,
+    rng: random.Random,
+) -> tuple[list[dict[str, Any]], list[int]] | None:
+    """Fill ``track``'s sampler kit with random one-shots from the library.
 
-    Pulls one-shots out of ``library`` (recognized by category/instrument, or
-    filename), randomly picks one per drum role, maps them onto a sampler kit at
-    the matching GM notes, and writes a ``bars``-bar pattern (bar 1 the style's
-    base groove, the rest humanized variations) routed into the kit. With
-    ``export`` it also renders the loop to a WAV. Set ``seed`` for a repeatable
-    pick + variation.
-    """
-    style = style.lower()
-    if style not in STYLES:
-        raise BadInputError(f"unknown style '{style}' (expected one of {sorted(STYLES)})")
-    if bars < 1:
-        raise BadInputError("bars must be >= 1")
-    preset = STYLES[style]
-    rng = random.Random(seed)
-
-    # Pull the library's one-shots and bucket them by GM note.
-    matches = library_mod.search(library=library, kind="one-shot")["matches"]
+    Pulls one-shots (across all libraries, or a single ``library``), buckets
+    them by GM note (recognized category/instrument, or filename), and maps one
+    per requested note — copied into the project. Returns ``(mapping, silent
+    notes)`` or ``None`` when the library can't furnish a usable kit (no
+    one-shots, or neither a kick nor a snare), so callers can fall back."""
+    matches = library_mod.search(library=library, kind="one-shot").get("matches", [])
     if not matches:
-        raise BadInputError(
-            f"library '{library}' has no one-shot samples — add/recognize a "
-            f"drum library first (mendell library add ... --recognize ace-step)"
-        )
+        return None
     buckets = _bucket_library_oneshots(matches)
-
-    base_pattern = preset["pattern"]
-    used_notes = {note for _, note, _, _ in base_pattern}
-    kit_notes, silent_notes = _pick_kit(buckets, used_notes, rng)
+    kit_notes, silent = _pick_kit(buckets, used_notes, rng)
     if _GM_KICK not in kit_notes and _GM_SNARE not in kit_notes:
-        raise BadInputError(
-            f"library '{library}' has no kick or snare one-shots to build a drum "
-            f"loop from (found roles: {sorted(buckets) if any(buckets.values()) else 'none'})"
-        )
+        return None  # no backbone — not worth a half-empty kit
 
-    # Scaffold: project + midi drum track routed into a sampler "kit" track.
-    project_dir = project_mod.create(
-        parent, name, bpm=preset["bpm"], key=preset["key"], scale=preset["scale"], genre=style
-    )
-    tracks_mod.add(project_dir, DRUM_TRACK, "midi")
-    tracks_mod.add(project_dir, KIT_TRACK, "sampler")
-    sampler_mod.create(project_dir, KIT_TRACK)
-    routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
-
-    # Map the chosen one-shots onto their GM notes (copied into the project).
     mapping: list[dict[str, Any]] = []
     for note, ref in sorted(kit_notes.items()):
         sample_path = library_mod.resolve_ref(ref)
         sampler_mod.map_add(
-            project_dir, KIT_TRACK, note=midi_to_note_name(note), sample=str(sample_path)
+            project_dir, track, note=midi_to_note_name(note), sample=str(sample_path)
         )
         mapping.append({"note": midi_to_note_name(note), "ref": ref})
-
-    # Build a `bars`-bar pattern: bar 1 = base groove, later bars humanized for
-    # movement; only the notes we actually mapped will sound.
-    combined: list[tuple[float, int, int, float]] = []
-    for bar_i in range(bars):
-        bar_pattern = base_pattern if bar_i == 0 else _humanize_pattern(base_pattern, rng)
-        for beat, note, vel, length in bar_pattern:
-            combined.append((beat + bar_i * BEATS_PER_BAR, note, vel, length))
-
-    pattern_path = project_dir / "midi" / PATTERN_FILENAME
-    write_pattern_midi(pattern_path, combined, bars=1)
-    clips_mod.import_clip(project_dir, DRUM_TRACK, PATTERN_CLIP, midi_path=str(pattern_path))
-    clips_mod.set_params(project_dir, DRUM_TRACK, PATTERN_CLIP, loop=True)
-    arrangement_mod.place(project_dir, DRUM_TRACK, PATTERN_CLIP, bar=1)
-    arrangement_mod.set_params(project_dir, length=float(bars))
-
-    result: dict[str, Any] = {
-        "project": project_mod.info(project_dir),
-        "library": library,
-        "style": style,
-        "bars": bars,
-        "seed": seed,
-        "kit": mapping,
-        "silent_notes": [midi_to_note_name(n) for n in silent_notes],
-    }
-    if export:
-        result["export"] = engine_mod.export(project_dir)
-    else:
-        result["next_steps"] = [f"mendell export {name}"]
-    return result
+    return mapping, silent
 
 
 def _seconds_per_bar(bpm: float) -> float:
@@ -353,10 +342,14 @@ def make(
     bass: str | None = None,
     export_format: str = "mp3",
     seed: int | None = None,
+    library: str | None = None,
 ) -> dict[str, Any]:
     """One-shot beat build: scaffold -> kit -> N distinct variation sections
     tiled to fill the target duration -> optional warped melody/bass loops ->
     render/export. Returns an envelope with the exported file path.
+
+    The kit defaults to random one-shots from the sample library (all libraries,
+    or a single ``library``); pass ``kit`` to load a one-shot folder instead.
     """
     style = style.lower()
     if style not in STYLES:
@@ -375,10 +368,22 @@ def make(
     sampler_mod.create(project_dir, KIT_TRACK)
     routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
 
-    # Optional one-shot kit (minimal load — caller curates the folder).
+    # Kit: an explicit one-shot folder wins; otherwise fill from the library.
+    # A dedicated rng stream keeps the kit pick from disturbing the (separately
+    # seeded) variation generator below, so existing seeded builds are stable.
     kit_info = None
     if kit:
         kit_info = kit_mod.load_kit(project_dir, KIT_TRACK, kit)
+    else:
+        used_notes = {note for _, note, _, _ in preset["pattern"]}
+        kit_rng = random.Random(f"{seed}:{name}:kit" if seed is not None else f"{name}:{style}:kit")
+        filled = _fill_kit_from_library(project_dir, KIT_TRACK, used_notes, library=library, rng=kit_rng)
+        if filled:
+            kit_info = {
+                "source": "library",
+                "mapped": filled[0],
+                "silent_notes": [midi_to_note_name(n) for n in filled[1]],
+            }
 
     # How many 8-bar sections do we need to cover the requested duration?
     seconds = _parse_duration_seconds(duration)

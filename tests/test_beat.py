@@ -10,9 +10,17 @@ import soundfile as sf
 from mendell import arrangement as arrangement_mod
 from mendell import beat
 from mendell import clips as clips_mod
+from mendell import library as library_mod
 from mendell import project as project_mod
 from mendell import tracks as tracks_mod
 from mendell.errors import BadInputError
+
+
+@pytest.fixture(autouse=True)
+def _isolated_library(tmp_path, monkeypatch):
+    """Point the (now library-backed) beat commands at an empty temp DB so they
+    never touch the developer's real library during tests."""
+    monkeypatch.setenv(library_mod.CONFIG_ENV_VAR, str(tmp_path / "library.db"))
 
 
 def _write_wav(path: Path, seconds: float, sr: int = 22050) -> None:
@@ -194,16 +202,17 @@ def _fake_library(monkeypatch, tmp_path, refs_by_category):
     monkeypatch.setattr(beat.library_mod, "resolve_ref", lambda ref: paths[ref])
 
 
-def test_from_library_builds_loop(tmp_path, monkeypatch):
+def test_new_fills_kit_from_library(tmp_path, monkeypatch):
     _fake_library(monkeypatch, tmp_path, {
         "kick": ["kick1.wav", "kick2.wav"],
         "snare": ["snare1.wav"],
         "hat": ["hat1.wav"],
     })
-    out = beat.from_library(tmp_path, "loop", library="lib", style="lofi", bars=4, seed=5)
+    out = beat.new(tmp_path, "loop", style="lofi", bars=4, seed=5)
 
     project_dir = tmp_path / "loop"
     assert out["bars"] == 4
+    assert out["kit_source"] == "library"
     assert out["silent_notes"] == []  # lofi uses kick/snare/closed-hat, all present
     notes = {m["note"] for m in out["kit"]}
     assert {"C2", "D2", "F#2"} <= notes  # GM 36/38/42
@@ -211,16 +220,27 @@ def test_from_library_builds_loop(tmp_path, monkeypatch):
     assert {beat.DRUM_TRACK, beat.KIT_TRACK} <= track_names
     assert arrangement_mod.load(project_dir)["arrangement"]["length"] == 4.0
     # Reproducible: same seed -> same kit refs.
-    out2 = beat.from_library(tmp_path, "loop2", library="lib", style="lofi", bars=4, seed=5)
+    out2 = beat.new(tmp_path, "loop2", style="lofi", bars=4, seed=5)
     assert [m["ref"] for m in out2["kit"]] == [m["ref"] for m in out["kit"]]
 
 
-def test_from_library_needs_kick_or_snare(tmp_path, monkeypatch):
+def test_new_falls_back_to_empty_kit_without_backbone(tmp_path, monkeypatch):
+    # Only hats/perc — no kick or snare, so the library can't furnish a usable
+    # kit; new() must still scaffold (empty kit + a `kit load` hint), not error.
     _fake_library(monkeypatch, tmp_path, {"hat": ["hat1.wav"], "perc": ["perc1.wav"]})
-    with pytest.raises(BadInputError, match="no kick or snare"):
-        beat.from_library(tmp_path, "loop", library="lib", style="lofi")
+    out = beat.new(tmp_path, "loop", style="lofi")
+    assert out["kit"] == []
+    assert out["kit_source"] == "empty"
+    assert any("kit load" in step for step in out["next_steps"])
 
 
-def test_from_library_rejects_bad_style(tmp_path):
+def test_new_empty_kit_when_no_library(tmp_path, monkeypatch):
+    # No libraries registered at all -> empty kit, still scaffolds.
+    monkeypatch.setattr(beat.library_mod, "search", lambda **kw: {"matches": []})
+    out = beat.new(tmp_path, "loop", style="lofi")
+    assert out["kit"] == [] and out["kit_source"] == "empty"
+
+
+def test_new_rejects_bad_style(tmp_path):
     with pytest.raises(BadInputError):
-        beat.from_library(tmp_path, "x", library="lib", style="nope")
+        beat.new(tmp_path, "x", style="nope")
