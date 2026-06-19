@@ -143,6 +143,12 @@ pip install 'git+https://github.com/ace-step/ACE-Step-1.5'
   `library add` (or `library scan`) skips everything already captioned and
   resumes from where it stopped — unchanged files are matched by path + mtime.
 
+  **VRAM after a scan.** The CLI frees the model on process exit. The web UI
+  (`mendell library serve`) frees it after **each** import — VRAM returns to
+  baseline once a scan finishes. Set `MENDELL_CAPTIONER_KEEP_WARM=1` before
+  launching the server to keep the model resident instead (faster back-to-back
+  imports, at the cost of pinning ~6–22 GB until the server stops).
+
 - **Generation (`mendell ace ...`) is manual download.** It loads DiT + LM
   checkpoints from a directory you point at — it never auto-fetches. Download the
   checkpoints you want from the

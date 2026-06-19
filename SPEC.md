@@ -374,6 +374,11 @@ Ctrl-C) keeps its completed work. Re-running `library add`/`library scan` matche
 unchanged files by `(rel_path, mtime)` and re-recognizes only the remainder —
 resume is automatic, no extra flag. `library remove` clears a library's cache.
 
+**VRAM lifecycle.** The CLI frees the captioner on process exit. The web UI
+(`mendell library serve`) frees it after each ace-step import, so VRAM returns to
+baseline between scans. Launch the server with `MENDELL_CAPTIONER_KEEP_WARM=1` to
+keep the model resident for fast back-to-back imports instead.
+
 **Archetypes (`--pattern`, default `mutation-loop`).** Each archetype is a YAML
 file in `patterns/` describing four 8-bar `sections`, each with `layers` (any of
 `drums`/`bass`/`melody`) and a melody `treatment` (`clean`, `octave-up`,
