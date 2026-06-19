@@ -2,7 +2,7 @@
 
 ## What Is This
 
-Mendell is an agent-first music production CLI tool. Think Ableton Live's feature set, but operated entirely through shell commands with structured JSON output. No TUI, no GUI, no interactive prompts. Designed to be driven by AI agents.
+Mendell is an agent-first music production CLI tool. Think Ableton Live's feature set, but operated primarily through shell commands with structured JSON output. Commands are single-shot and non-interactive (no prompts), so they compose and script cleanly; optional web UIs (e.g. `mendell library serve`) sit on top of the same API. Designed to be driven by AI agents.
 
 ## Current State
 
@@ -12,7 +12,7 @@ The `rubberband` CLI binary (required by `pyrubberband` for time-stretch/pitch-s
 
 ## Key Design Decisions (Do Not Revisit)
 
-- **No TUI or GUI** — pure CLI, every operation is a single command
+- **CLI-first, single-shot commands** — every operation is a scriptable command with structured JSON output. Optional web UIs (e.g. `mendell library serve`) may be layered on top, but they are thin front-ends over the same command/API surface — never a replacement for it, and never an interactive prompt inside a command.
 - **No live audio playback** — output is exported files only (WAV/MP3)
 - **No step sequencer** — MIDI clips come exclusively from imported `.mid` files
 - **No scenes** — clips place directly into the arrangement at bar positions

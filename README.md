@@ -1,9 +1,11 @@
 # Mendell
 
 Mendell is an agent-first music production CLI. Think Ableton Live's feature
-set, but operated entirely through shell commands with structured JSON
-output — no TUI, no GUI, no interactive prompts. It's designed to be driven
-by AI agents (and humans who like scripting their DAW).
+set, but operated primarily through shell commands with structured JSON
+output — single-shot, non-interactive commands that compose and script
+cleanly, with optional web UIs (e.g. `mendell library serve`) layered over
+the same API. It's designed to be driven by AI agents (and humans who like
+scripting their DAW).
 
 Projects, tracks, clips, samplers, arrangements, mixing, automation, and FX
 are all managed via single-shot `mendell <noun> <verb>` commands, and the

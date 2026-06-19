@@ -30,6 +30,42 @@ def new(name, style):
     return data, f"created beat '{base}' ({style}) at {data['project']['path']}"
 
 
+@beat.command("from-library")
+@click.argument("name")
+@click.option("--library", "library", required=True,
+              help="Sample library to pull one-shots from (see `mendell library list`).")
+@click.option("--style", type=click.Choice(sorted(beat_mod.STYLES)), default="lofi",
+              help="Groove preset — tempo/key + base drum pattern (default: lofi).")
+@click.option("--bars", default=8, type=int, help="Loop length in bars (default: 8).")
+@click.option("--seed", type=int, help="Random seed for a reproducible kit + variations.")
+@click.option("--export", "export", is_flag=True, default=False,
+              help="Also render the loop to a WAV.")
+@json_option
+@command
+def from_library(name, library, style, bars, seed, export):
+    """Build NAME: a drum-loop project from random one-shots in --library.
+
+    Pulls one-shots out of the library (matched by recognized category/instrument,
+    or filename), randomly maps one per drum role onto a sampler 'kit' at the GM
+    notes the pattern plays, and writes a --bars-bar groove (bar 1 the style's
+    base, the rest humanized). Use --seed to reproduce a pick, --export to render.
+    """
+    parent, base = config_mod.resolve_project_parent(name)
+    data = beat_mod.from_library(
+        parent, base, library=library, style=style, bars=bars, seed=seed, export=export,
+    )
+    kit_n = len(data["kit"])
+    silent = f", silent: {','.join(data['silent_notes'])}" if data["silent_notes"] else ""
+    tail = ""
+    if export:
+        out = data["export"].get("out") or data["export"].get("path")
+        tail = f" -> {out}"
+    return data, (
+        f"built '{base}' ({style}, {bars} bars) from library '{library}' — "
+        f"{kit_n} samples mapped{silent}{tail}"
+    )
+
+
 @beat.command("make")
 @click.argument("name")
 @click.option("--style", type=click.Choice(sorted(beat_mod.STYLES)), required=True, help="Style preset.")

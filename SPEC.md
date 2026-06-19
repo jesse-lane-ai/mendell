@@ -6,7 +6,7 @@
 
 ## Vision
 
-Mendell is a headless music production tool operated entirely through the CLI. No TUI, no GUI. Every feature is a single-shot command with structured JSON output — designed to be composed, scripted, and driven by AI agents.
+Mendell is a music production tool operated primarily through the CLI. Every feature is a single-shot, non-interactive command with structured JSON output — designed to be composed, scripted, and driven by AI agents. Optional web UIs (e.g. `mendell library serve`) are thin front-ends layered over the same command/API surface.
 
 ---
 
@@ -230,6 +230,15 @@ mendell kit load <project> <track> <folder> [--start-note C5] [--json]
 # in one shot — uses the same General MIDI percussion notes as `beat new` /
 # `kit load`, so it composes with both. Loops by default (--no-loop to disable).
 mendell midi generate <project> <track> <clip-name> --style boom-bap|lofi|trap [--bars 1] [--no-loop] [--json]
+
+# Build an N-bar drum LOOP project from random one-shots in a sample library.
+# Pulls one-shots out of --library (matched by recognized category/instrument,
+# or filename), randomly maps one per drum role onto a sampler 'kit' at the GM
+# notes the --style pattern plays, and writes a --bars-bar groove (bar 1 = the
+# style's base, later bars humanized). Needs at least a kick or snare. --seed
+# reproduces the pick + variations; --export also renders a WAV.
+mendell beat from-library <name> --library <lib> [--style lofi|dark|energetic]
+                          [--bars 8] [--seed N] [--export] [--json]
 
 # Build a complete, editable 32-bar beat PROJECT from the sample library and
 # export it. Creates drums(midi)->kit(sampler) + bass(audio) + melody(audio)
@@ -1102,7 +1111,6 @@ Zero local dependencies — the recommended option for agents running in contain
 
 ## Out of Scope (v1)
 
-- Any TUI or GUI
 - Live audio playback (output is exported files only)
 - VST/AU plugin hosting
 - Audio recording from microphone/interface

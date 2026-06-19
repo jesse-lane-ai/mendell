@@ -1,8 +1,11 @@
 """Unit tests for `mendell beat` scaffolding and the high-level `make` orchestration."""
 
 import random
+from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from mendell import arrangement as arrangement_mod
 from mendell import beat
@@ -10,6 +13,11 @@ from mendell import clips as clips_mod
 from mendell import project as project_mod
 from mendell import tracks as tracks_mod
 from mendell.errors import BadInputError
+
+
+def _write_wav(path: Path, seconds: float, sr: int = 22050) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(path), np.zeros(int(seconds * sr), dtype="float32"), sr)
 
 
 # --- duration parsing -------------------------------------------------------
@@ -132,3 +140,87 @@ def test_make_creates_expected_tracks(tmp_path):
     track_names = {t["name"] for t in tracks_mod.list_tracks(project_dir)}
     assert beat.DRUM_TRACK in track_names
     assert beat.KIT_TRACK in track_names
+
+
+# --- beat from-library ------------------------------------------------------
+
+def _match(ref, category="", instruments=None):
+    return {"ref": ref, "category": category, "instruments": instruments or []}
+
+
+def test_bucket_library_oneshots_by_category_instrument_and_filename():
+    matches = [
+        _match("lib/kick01.wav", category="kick"),
+        _match("lib/sn.wav", category="snare"),
+        _match("lib/x.wav", instruments=["open hat"]),       # instrument tag
+        _match("lib/HHCLOSED.wav"),                           # filename fallback
+        _match("lib/melodic-stab.wav", category="melody"),    # not a drum role
+    ]
+    buckets = beat._bucket_library_oneshots(matches)
+    assert "lib/kick01.wav" in buckets[beat._GM_KICK]
+    assert "lib/sn.wav" in buckets[beat._GM_SNARE]
+    assert "lib/x.wav" in buckets[beat._GM_OPEN_HAT]
+    assert "lib/HHCLOSED.wav" in buckets[beat._GM_CLOSED_HAT]  # via filename guess
+    assert not any("melodic-stab" in r for refs in buckets.values() for r in refs)
+
+
+def test_pick_kit_is_seeded_and_falls_back():
+    buckets = {note: [] for note in beat._NOTE_ROLES}
+    buckets[beat._GM_KICK] = ["k1", "k2"]
+    buckets[beat._GM_SNARE] = ["s1"]
+    buckets[beat._GM_CLOSED_HAT] = ["h1"]
+    notes = {beat._GM_KICK, beat._GM_SNARE, beat._GM_OPEN_HAT, beat._GM_PERC}
+    chosen, silent = beat._pick_kit(buckets, notes, random.Random(1))
+    assert chosen[beat._GM_KICK] in ("k1", "k2")
+    assert chosen[beat._GM_SNARE] == "s1"
+    assert chosen[beat._GM_OPEN_HAT] == "h1"   # borrowed closed-hat pool (fallback)
+    assert beat._GM_PERC in silent             # nothing anywhere -> silent
+    chosen2, _ = beat._pick_kit(buckets, notes, random.Random(1))
+    assert chosen2 == chosen                    # same seed -> same pick
+
+
+def _fake_library(monkeypatch, tmp_path, refs_by_category):
+    """Point beat.from_library at fake library data: real tiny WAVs on disk, a
+    search() returning them, and resolve_ref() mapping ref -> path."""
+    paths, matches = {}, []
+    for category, names in refs_by_category.items():
+        for n in names:
+            p = tmp_path / "samples" / n
+            _write_wav(p, 0.1)
+            ref = f"lib/{n}"
+            paths[ref] = p
+            matches.append(_match(ref, category=category))
+    monkeypatch.setattr(beat.library_mod, "search", lambda **kw: {"matches": matches})
+    monkeypatch.setattr(beat.library_mod, "resolve_ref", lambda ref: paths[ref])
+
+
+def test_from_library_builds_loop(tmp_path, monkeypatch):
+    _fake_library(monkeypatch, tmp_path, {
+        "kick": ["kick1.wav", "kick2.wav"],
+        "snare": ["snare1.wav"],
+        "hat": ["hat1.wav"],
+    })
+    out = beat.from_library(tmp_path, "loop", library="lib", style="lofi", bars=4, seed=5)
+
+    project_dir = tmp_path / "loop"
+    assert out["bars"] == 4
+    assert out["silent_notes"] == []  # lofi uses kick/snare/closed-hat, all present
+    notes = {m["note"] for m in out["kit"]}
+    assert {"C2", "D2", "F#2"} <= notes  # GM 36/38/42
+    track_names = {t["name"] for t in tracks_mod.list_tracks(project_dir)}
+    assert {beat.DRUM_TRACK, beat.KIT_TRACK} <= track_names
+    assert arrangement_mod.load(project_dir)["arrangement"]["length"] == 4.0
+    # Reproducible: same seed -> same kit refs.
+    out2 = beat.from_library(tmp_path, "loop2", library="lib", style="lofi", bars=4, seed=5)
+    assert [m["ref"] for m in out2["kit"]] == [m["ref"] for m in out["kit"]]
+
+
+def test_from_library_needs_kick_or_snare(tmp_path, monkeypatch):
+    _fake_library(monkeypatch, tmp_path, {"hat": ["hat1.wav"], "perc": ["perc1.wav"]})
+    with pytest.raises(BadInputError, match="no kick or snare"):
+        beat.from_library(tmp_path, "loop", library="lib", style="lofi")
+
+
+def test_from_library_rejects_bad_style(tmp_path):
+    with pytest.raises(BadInputError):
+        beat.from_library(tmp_path, "x", library="lib", style="nope")
