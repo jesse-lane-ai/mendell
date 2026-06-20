@@ -129,6 +129,8 @@ class _Handler(BaseHTTPRequestHandler):
                 if not name:
                     raise MendellError("name is required", code=1)
                 self._send_json({"ok": True, "data": kits_mod.show(name)})
+            elif path == "/api/kits/audio":
+                self._serve_kit_audio(query)
             elif path == "/api/arrange/view":
                 proj_path = query.get("path", [None])[0]
                 if not proj_path:
@@ -253,6 +255,22 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/kits/remove":
                 data = kits_mod.remove(payload["name"])
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/random-slot":
+                data = kits_mod.random_slot(
+                    payload["kit"], payload["note"],
+                    library=payload.get("library") or None,
+                    seed=int(payload["seed"]) if payload.get("seed") not in (None, "") else None,
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/set-slot":
+                data = kits_mod.add_slot(
+                    payload["kit"], payload["note"], payload["path"],
+                    slot_name=payload.get("slot_name") or "",
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/clear-slot":
+                data = kits_mod.remove_slot(payload["kit"], payload["note"])
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/midilib/generate":
                 data = midi_catalog_mod.generate(
@@ -418,6 +436,21 @@ class _Handler(BaseHTTPRequestHandler):
         target = library_mod.resolve_ref(ref)
         if target is None or not target.is_file():
             self._send(404, b"audio not found", "text/plain")
+            return
+        self._stream_file(target)
+
+    def _serve_kit_audio(self, q: dict):
+        kit = q.get("kit", [None])[0]
+        note = q.get("note", [None])[0]
+        if not kit or note is None:
+            self._send(400, b"missing kit/note", "text/plain")
+            return
+        try:
+            target = kits_mod.slot_source_path(kit, note)
+        except Exception:  # noqa: BLE001
+            target = None
+        if target is None or not target.is_file():
+            self._send(404, b"slot has no audio", "text/plain")
             return
         self._stream_file(target)
 
@@ -620,9 +653,30 @@ _PAGE = r"""<!DOCTYPE html>
   <div id="kitDetail" style="display:none;margin-top:20px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
       <span id="kitDetailTitle" style="font-weight:600"></span>
-      <button onclick="document.getElementById('kitDetail').style.display='none'" style="margin-left:auto">Close</button>
+      <label class="muted" style="margin-left:auto;font-size:12px">Random from
+        <input id="kitPadLib" placeholder="any library" style="width:130px"></label>
+      <button onclick="document.getElementById('kitDetail').style.display='none'">Close</button>
     </div>
-    <div id="kitDetailSlots" style="overflow-x:auto"></div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
+      <div>
+        <div id="kitPads"></div>
+        <div class="muted" style="font-size:11px;margin-top:6px">Click a pad to play · 🎲 random · ✕ clear</div>
+      </div>
+      <div id="kitPadPanel" class="card" style="min-width:240px;display:none">
+        <div style="font-weight:600;margin-bottom:6px"><span id="kpNote"></span> · <span id="kpCat" class="muted"></span></div>
+        <div id="kpFile" class="muted" style="font-size:11px;word-break:break-all;margin-bottom:8px">— empty —</div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button class="primary" onclick="kitPadPlay(_selPad)">▶ Play</button>
+          <button onclick="kitPadRandom(_selPad)">🎲 Random</button>
+          <button onclick="kitPadClear(_selPad)">✕ Clear</button>
+        </div>
+        <input id="kpSetPath" placeholder="library ref or /path/to/sample.wav" style="width:100%;margin-bottom:6px">
+        <button onclick="kitPadSet(_selPad)">Set sample</button>
+        <div id="kpStatus" class="muted" style="font-size:11px;margin-top:6px"></div>
+      </div>
+    </div>
+    <details style="margin-top:14px"><summary class="muted" style="cursor:pointer;font-size:12px">All slots (table)</summary>
+    <div id="kitDetailSlots" style="overflow-x:auto;margin-top:8px"></div></details>
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
       <input id="kitApplyProject" placeholder="/path/to/project" style="min-width:260px">
       <input id="kitApplyTrack" placeholder="track" value="drums" style="width:120px">
@@ -1198,12 +1252,24 @@ async function loadKits() {
       '<span class="muted">' + esc(k.description || "") + '</span></div>').join("");
   } catch (e) { document.getElementById("kitStatus").textContent = e.message; }
 }
+// 4x4 MPC-style pad grid over GM drum notes 36–51 (pad 1 = note 36, bottom-left).
+const PAD_ROWS = [[48,49,50,51],[44,45,46,47],[40,41,42,43],[36,37,38,39]];
+const PAD_CAT = {36:"kick",37:"rim",38:"snare",39:"clap",40:"perc",41:"perc",
+  42:"hat",43:"perc",44:"perc",45:"tom",46:"openhat",47:"perc",48:"perc",
+  49:"crash",50:"perc",51:"ride"};
+let _kitSlots = {};   // gm_note -> slot
+let _selPad = null;
+let _padAudio = null;
+
 async function showKit(nameEnc) {
   const name = decodeURIComponent(nameEnc);
   _selectedKit = name;
   try {
     const kit = await api("/api/kits/show?name=" + encodeURIComponent(name));
     document.getElementById("kitDetailTitle").textContent = kit.name + " (" + kit.slot_count + " slot" + (kit.slot_count === 1 ? "" : "s") + ")";
+    _kitSlots = {};
+    (kit.slots || []).forEach(s => { _kitSlots[s.gm_note] = s; });
+    renderPads();
     const rows = (kit.slots || []).map(s =>
       '<tr><td style="padding:4px 10px 4px 0;color:#5b8cff">' + s.gm_note + '</td><td style="padding:4px 10px 4px 0">' +
       esc(s.note_name || "") + '</td><td style="padding:4px 10px 4px 0" class="muted">' + esc(s.category || "") +
@@ -1213,7 +1279,88 @@ async function showKit(nameEnc) {
       '<th style="padding:0 10px 4px 0">Note#</th><th style="padding:0 10px 4px 0">Name</th><th style="padding:0 10px 4px 0">Category</th><th>File</th></tr></thead><tbody>' + rows + '</tbody></table>';
     document.getElementById("kitDetail").style.display = "";
     document.getElementById("kitApplyStatus").textContent = "";
+    if (_selPad != null) selectPad(_selPad);
   } catch (e) { alert(e.message); }
+}
+
+function renderPads() {
+  const filled = "background:#2d3550;border-color:#5b8cff;color:#dfe6ff";
+  const empty = "background:#15171b;border-color:#2a2e35;color:#5b6270";
+  let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+  for (const row of PAD_ROWS) {
+    html += '<div style="display:flex;gap:8px">';
+    for (const note of row) {
+      const s = _kitSlots[note];
+      const cat = s ? (s.category || PAD_CAT[note]) : PAD_CAT[note];
+      const label = s ? esc(s.name || cat) : esc(cat);
+      const sel = (_selPad === note) ? "box-shadow:0 0 0 2px #fff inset;" : "";
+      html += '<div onclick="padClick(' + note + ')" title="note ' + note + '" ' +
+        'style="width:92px;height:78px;border:1px solid;border-radius:8px;cursor:pointer;' +
+        'display:flex;flex-direction:column;justify-content:space-between;padding:6px;' + sel +
+        (s ? filled : empty) + '">' +
+        '<div style="font-size:10px;opacity:.7">' + note + ' · ' + esc(PAD_CAT[note]) + '</div>' +
+        '<div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</div>' +
+        '<div style="display:flex;gap:4px;justify-content:flex-end">' +
+        '<span onclick="event.stopPropagation();kitPadRandom(' + note + ')" style="cursor:pointer">🎲</span>' +
+        (s ? '<span onclick="event.stopPropagation();kitPadClear(' + note + ')" style="cursor:pointer">✕</span>' : '') +
+        '</div></div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  document.getElementById("kitPads").innerHTML = html;
+}
+
+function padClick(note) { selectPad(note); kitPadPlay(note); }
+
+function selectPad(note) {
+  _selPad = note;
+  renderPads();
+  const s = _kitSlots[note];
+  document.getElementById("kitPadPanel").style.display = "";
+  document.getElementById("kpNote").textContent = "Note " + note;
+  document.getElementById("kpCat").textContent = s ? (s.category || PAD_CAT[note]) : PAD_CAT[note];
+  document.getElementById("kpFile").textContent = s ? (s.source_path || "") : "— empty —";
+  document.getElementById("kpStatus").textContent = "";
+}
+
+function kitPadPlay(note) {
+  if (note == null || !_kitSlots[note]) return;
+  if (_padAudio) { _padAudio.pause(); }
+  _padAudio = new Audio("/api/kits/audio?kit=" + encodeURIComponent(_selectedKit) + "&note=" + note + "&t=" + Date.now());
+  _padAudio.play().catch(() => {});
+}
+
+async function kitPadRandom(note) {
+  selectPad(note);
+  const st = document.getElementById("kpStatus");
+  st.textContent = "Picking…";
+  try {
+    await api("/api/kits/random-slot", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kit: _selectedKit, note, library: document.getElementById("kitPadLib").value.trim() || null }) });
+    await showKit(encodeURIComponent(_selectedKit));
+    kitPadPlay(note);
+  } catch (e) { st.textContent = e.message; }
+}
+
+async function kitPadClear(note) {
+  try {
+    await api("/api/kits/clear-slot", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kit: _selectedKit, note }) });
+    await showKit(encodeURIComponent(_selectedKit));
+  } catch (e) { alert(e.message); }
+}
+
+async function kitPadSet(note) {
+  const path = document.getElementById("kpSetPath").value.trim();
+  if (!path) { alert("Enter a library ref or file path"); return; }
+  try {
+    await api("/api/kits/set-slot", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kit: _selectedKit, note, path }) });
+    document.getElementById("kpSetPath").value = "";
+    await showKit(encodeURIComponent(_selectedKit));
+    kitPadPlay(note);
+  } catch (e) { document.getElementById("kpStatus").textContent = e.message; }
 }
 async function kitCreate() {
   const name = document.getElementById("kitCreateName").value.trim();

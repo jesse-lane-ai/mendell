@@ -263,6 +263,83 @@ def remove(name: str) -> dict[str, Any]:
     return {"removed": name}
 
 
+def remove_slot(kit_name: str, gm_note_or_category: str | int) -> dict[str, Any]:
+    """Clear a single slot (one GM note) from a kit. Idempotent."""
+    gm_note = _resolve_note_arg(gm_note_or_category)
+    now = time.time()
+    with _conn() as con:
+        _require_kit(con, kit_name)
+        con.execute(
+            "DELETE FROM kit_slots WHERE kit_name = ? AND gm_note = ?",
+            (kit_name, gm_note),
+        )
+        con.execute("UPDATE kits SET last_updated = ? WHERE name = ?", (now, kit_name))
+    return {"kit": kit_name, "gm_note": gm_note, "removed": True}
+
+
+def slot_source_path(kit_name: str, gm_note_or_category: str | int) -> Path | None:
+    """Return the filesystem path backing a kit slot, or ``None`` if unset."""
+    gm_note = _resolve_note_arg(gm_note_or_category)
+    with _conn() as con:
+        _require_kit(con, kit_name)
+        row = con.execute(
+            "SELECT source_path FROM kit_slots WHERE kit_name = ? AND gm_note = ?",
+            (kit_name, gm_note),
+        ).fetchone()
+    if row is None:
+        return None
+    p = Path(row["source_path"])
+    return p if p.exists() else None
+
+
+def random_slot(
+    kit_name: str,
+    gm_note_or_category: str | int,
+    *,
+    library: str | None = None,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Assign a random library one-shot to a single kit slot.
+
+    Prefers a sample whose category matches the pad's GM note (kick/snare/…),
+    falling back to any one-shot if the category has no matches. Idempotent on
+    the kit row itself (creates it if missing).
+    """
+    rng = random.Random(seed)
+    create(kit_name)  # ensure kit exists
+    gm_note = _resolve_note_arg(gm_note_or_category)
+    category = _category_for_note(gm_note)
+
+    def _matches(**kw) -> list[dict]:
+        return library_mod.search(library=library, **kw).get("matches", [])
+
+    candidates = _matches(category=category, kind="one-shot")
+    if not candidates:
+        candidates = [
+            m for m in _matches(category=category)
+            if m.get("kind") in ("one-shot", None, "unknown")
+        ]
+    if not candidates:
+        candidates = _matches(kind="one-shot")  # any one-shot
+    if not candidates:
+        raise BadInputError(
+            f"no samples available to fill note {gm_note} ({category}) — "
+            "register a sample library first with `mendell library add`"
+        )
+
+    # Try a few picks in case a ref fails to resolve.
+    rng.shuffle(candidates)
+    for chosen in candidates:
+        path = library_mod.resolve_ref(chosen["ref"])
+        if path is not None and path.exists():
+            return add_slot(kit_name, gm_note, str(path), slot_name=Path(str(path)).stem)
+
+    raise BadInputError(
+        f"found {len(candidates)} candidate samples for note {gm_note} "
+        f"({category}) but none resolved to a readable file"
+    )
+
+
 def apply_to_project(
     kit_name: str,
     project_dir: Path,
