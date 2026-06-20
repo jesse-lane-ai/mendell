@@ -674,6 +674,36 @@ mendell kits apply <kit> <project> <track> [--json]
 mendell kits remove <name> [--json]
 ```
 
+### MIDI Catalog (global)
+
+A global catalog of reusable MIDI clips/patterns, stored in `library.db` (`midi_clips`
+table) with the `.mid` files copied into a `midi_catalog/` store next to the DB. The
+cross-project counterpart to per-project MIDI clips: generate or draw a pattern once,
+then import it into any project. Generation shares the `boom-bap/lofi/trap` style
+presets and GM percussion notes used by `beat new` and `midi generate`, so cataloged
+clips compose with kits. Idempotent on `name`.
+
+```bash
+# Register an existing .mid under a catalog name (reads bars + note count)
+mendell midilib import <path> --name <name> [--category drums|bass|melody|chords|perc|other] [--json]
+
+# Generate a drum pattern from a style preset and catalog it
+mendell midilib generate <name> --style boom-bap|lofi|trap [--bars N] [--bpm <float>] [--category ...] [--json]
+
+# Build a clip from an explicit note grid (the backing API for the web step-grid
+# editor). Notes are [{pitch, start_beat, length_beats, velocity}] — supply them
+# via --notes-file <path.json> or inline --notes-json '<json>'.
+mendell midilib create <name> (--notes-file <path> | --notes-json <json>) [--bpm <float>] [--bars N] [--category ...] [--json]
+
+# List (optionally filter by --category) / inspect / parse a .mid to a note grid
+mendell midilib list [--category <cat>] [--json]
+mendell midilib show <name> [--json]
+mendell midilib summary <path> [--json]   # → {bars, ppq, bpm, notes:[...]}
+
+# Drop a cataloged clip
+mendell midilib remove <name> [--json]
+```
+
 ### Tracks
 
 ```bash

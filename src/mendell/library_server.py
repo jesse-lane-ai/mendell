@@ -27,6 +27,7 @@ from . import beat_random32
 from . import config as config_mod
 from . import kits as kits_mod
 from . import library as library_mod
+from . import midi_catalog as midi_catalog_mod
 from . import midi_gen as midi_gen_mod
 from . import registry as registry_mod
 from .clips.name_classify import classify_from_names
@@ -127,6 +128,20 @@ class _Handler(BaseHTTPRequestHandler):
                 if not name:
                     raise MendellError("name is required", code=1)
                 self._send_json({"ok": True, "data": kits_mod.show(name)})
+            elif path == "/api/midilib/list":
+                category = query.get("category", [None])[0] or None
+                self._send_json({"ok": True, "data": midi_catalog_mod.list_clips(category=category)})
+            elif path == "/api/midilib/show":
+                name = query.get("name", [None])[0]
+                if not name:
+                    raise MendellError("name is required", code=1)
+                self._send_json({"ok": True, "data": midi_catalog_mod.show(name)})
+            elif path == "/api/midilib/summary":
+                name = query.get("name", [None])[0]
+                if not name:
+                    raise MendellError("name is required", code=1)
+                clip = midi_catalog_mod.show(name)
+                self._send_json({"ok": True, "data": midi_catalog_mod.summary(clip["path"])})
             elif path == "/api/classify/probe":
                 file_path_param = query.get("path", [None])[0]
                 if not file_path_param:
@@ -231,6 +246,31 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/kits/remove":
                 data = kits_mod.remove(payload["name"])
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/midilib/generate":
+                data = midi_catalog_mod.generate(
+                    payload["name"], style=payload["style"],
+                    bars=int(payload.get("bars") or 1),
+                    bpm=float(payload["bpm"]) if payload.get("bpm") else None,
+                    category=payload.get("category") or "drums",
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/midilib/create":
+                data = midi_catalog_mod.create_from_notes(
+                    payload["name"], payload["notes"],
+                    bpm=float(payload.get("bpm") or 120),
+                    bars=int(payload.get("bars") or 1),
+                    category=payload.get("category") or "other",
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/midilib/import":
+                data = midi_catalog_mod.import_file(
+                    payload["path"], name=payload["name"],
+                    category=payload.get("category") or "other",
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/midilib/remove":
+                data = midi_catalog_mod.remove(payload["name"])
                 self._send_json({"ok": True, "data": data})
             else:
                 self._send(404, b"not found", "text/plain")
@@ -431,8 +471,8 @@ _PAGE = r"""<!DOCTYPE html>
   .card { background: #1b1e24; border: 1px solid #333842; border-radius: 8px; padding: 14px; min-width: 220px; flex: 1; max-width: 320px; }
   .card h3 { margin: 0 0 10px; font-size: 14px; }
   .card input, .card select { margin-bottom: 8px; }
-  #kitList .kit-row { background: #1b1e24; border: 1px solid #333842; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
-  #kitList .kit-row:hover { background: #21252d; }
+  #kitList .kit-row, #midiClipList .midi-row { background: #1b1e24; border: 1px solid #333842; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  #kitList .kit-row:hover, #midiClipList .midi-row:hover { background: #21252d; }
   dialog { background: #1b1e24; color: #e6e8eb; border: 1px solid #333842; border-radius: 10px; padding: 20px; width: 360px; }
   dialog h3 { margin: 0 0 12px; }
   dialog label { display: block; margin: 10px 0 4px; color: #aab3c2; }
@@ -447,6 +487,7 @@ _PAGE = r"""<!DOCTYPE html>
     <button id="tab-library" class="tab active" onclick="showTab('library')">Library</button>
     <button id="tab-projects" class="tab" onclick="showTab('projects')">Projects</button>
     <button id="tab-kits" class="tab" onclick="showTab('kits')">Kits</button>
+    <button id="tab-midi" class="tab" onclick="showTab('midi')">MIDI</button>
     <button id="tab-classify" class="tab" onclick="showTab('classify')">Classify</button>
   </nav>
   <span id="libActions">
@@ -459,6 +500,9 @@ _PAGE = r"""<!DOCTYPE html>
   </span>
   <span id="kitsActions" style="display:none">
     <button onclick="loadKits()">Refresh</button>
+  </span>
+  <span id="midiActions" style="display:none">
+    <button onclick="midiLoadClips()">Refresh</button>
   </span>
   <span id="classifyActions" style="display:none"></span>
 </header>
@@ -516,6 +560,43 @@ _PAGE = r"""<!DOCTYPE html>
       <button onclick="kitRemove()">Delete kit</button>
     </div>
     <div id="kitApplyStatus" class="muted" style="margin-top:8px"></div>
+  </div>
+</section>
+
+<section id="midiView" style="display:none; padding:16px 20px; width:100%">
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+    <select id="midiCatFilter" onchange="midiLoadClips()">
+      <option value="">all categories</option>
+      <option value="drums">drums</option><option value="bass">bass</option>
+      <option value="melody">melody</option><option value="chords">chords</option>
+      <option value="perc">perc</option><option value="other">other</option>
+    </select>
+  </div>
+  <div id="midiClipList" style="margin-bottom:24px"></div>
+  <div class="card" style="margin-bottom:20px;max-width:none">
+    <h3>Generate from style preset</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <input id="midiGenName" placeholder="pattern name" style="width:140px">
+      <select id="midiGenStyle"><option>boom-bap</option><option>lofi</option><option>trap</option></select>
+      <input id="midiGenBars" type="number" value="1" min="1" max="32" style="width:70px" title="bars">
+      <input id="midiGenBpm" type="number" placeholder="bpm" style="width:70px">
+      <select id="midiGenCategory"><option>drums</option><option>bass</option><option>melody</option><option>chords</option><option>perc</option><option>other</option></select>
+      <button class="primary" onclick="midiGenerate()">Generate</button>
+      <span id="midiGenStatus" class="muted"></span>
+    </div>
+  </div>
+  <div class="card" style="max-width:none">
+    <h3>Step-grid note editor</h3>
+    <p class="muted" style="font-size:12px;margin:4px 0 10px">Rows = pitches C3–B4, columns = 16 steps (1 bar in 4/4). Click cells to toggle; click a clip above to load it.</p>
+    <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap">
+      <input id="midiEditorName" placeholder="save as" style="width:130px">
+      <input id="midiEditorBpm" type="number" value="120" style="width:70px" title="bpm">
+      <select id="midiEditorCategory"><option>other</option><option>drums</option><option>bass</option><option>melody</option><option>chords</option><option>perc</option></select>
+      <button class="primary" onclick="midiEditorSave()">Save to catalog</button>
+      <button onclick="midiEditorClear()">Clear</button>
+      <span id="midiEditorStatus" class="muted"></span>
+    </div>
+    <div id="midiGridWrap" style="overflow-x:auto"></div>
   </div>
 </section>
 
@@ -754,6 +835,8 @@ const TABS = {
               onShow: () => { if (!projectsLoaded) loadProjects(); } },
   kits:     { view: "kitsView",     actions: "kitsActions",     disp: "block",
               onShow: () => loadKits() },
+  midi:     { view: "midiView",     actions: "midiActions",     disp: "block",
+              onShow: () => midiTabInit() },
   classify: { view: "classifyView", actions: "classifyActions", disp: "block" },
 };
 function showTab(name) {
@@ -985,6 +1068,122 @@ async function kitRemove() {
     document.getElementById("kitDetail").style.display = "none";
     loadKits();
   } catch (e) { alert(e.message); }
+}
+
+// ---- MIDI tab -----------------------------------------------------------
+const MIDI_STEPS = 16;
+const MIDI_PITCHES = Array.from({ length: 24 }, (_, i) => 71 - i);
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+function midiNoteName(p) { return NOTE_NAMES[p % 12] + (Math.floor(p / 12) - 1); }
+let midiGridState = new Set();
+function midiInitGrid() {
+  const wrap = document.getElementById("midiGridWrap");
+  const table = document.createElement("table");
+  table.style.cssText = "border-collapse:collapse;font-size:11px";
+  MIDI_PITCHES.forEach(pitch => {
+    const tr = document.createElement("tr");
+    const lbl = document.createElement("td");
+    lbl.textContent = midiNoteName(pitch);
+    lbl.style.cssText = "padding:1px 6px 1px 0;text-align:right;color:#8b93a1;white-space:nowrap;width:32px";
+    tr.appendChild(lbl);
+    for (let s = 0; s < MIDI_STEPS; s++) {
+      const td = document.createElement("td");
+      td.id = "mg-" + pitch + "-" + s;
+      td.style.cssText = "width:24px;height:20px;border:1px solid #2a2e35;cursor:pointer;background:#15171b";
+      td.onclick = () => midiToggleCell(pitch, s);
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  });
+  wrap.innerHTML = ""; wrap.appendChild(table);
+}
+function midiToggleCell(pitch, step) {
+  const key = pitch + ":" + step;
+  const el = document.getElementById("mg-" + pitch + "-" + step);
+  if (midiGridState.has(key)) { midiGridState.delete(key); el.style.background = "#15171b"; }
+  else { midiGridState.add(key); el.style.background = "#3b5bdb"; }
+}
+function midiEditorClear() {
+  midiGridState.clear();
+  document.querySelectorAll('[id^="mg-"]').forEach(el => el.style.background = "#15171b");
+}
+function midiGridLoadNotes(notes) {
+  midiEditorClear();
+  (notes || []).forEach(n => {
+    const step = Math.round(n.start_beat / 0.25);
+    if (step >= 0 && step < MIDI_STEPS && MIDI_PITCHES.includes(n.pitch)) {
+      midiGridState.add(n.pitch + ":" + step);
+      const el = document.getElementById("mg-" + n.pitch + "-" + step);
+      if (el) el.style.background = "#3b5bdb";
+    }
+  });
+}
+async function midiEditorSave() {
+  const name = document.getElementById("midiEditorName").value.trim();
+  const bpm = parseFloat(document.getElementById("midiEditorBpm").value) || 120;
+  const category = document.getElementById("midiEditorCategory").value;
+  const st = document.getElementById("midiEditorStatus");
+  if (!name) { st.textContent = "Enter a name first."; return; }
+  if (!midiGridState.size) { st.textContent = "Grid is empty."; return; }
+  const notes = [];
+  midiGridState.forEach(key => {
+    const [p, s] = key.split(":").map(Number);
+    notes.push({ pitch: p, start_beat: s * 0.25, length_beats: 0.25, velocity: 100 });
+  });
+  st.textContent = "Saving…";
+  try {
+    await api("/api/midilib/create", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, notes, bpm, bars: 1, category }) });
+    st.textContent = "Saved '" + name + "' (" + notes.length + " notes)."; midiLoadClips();
+  } catch (e) { st.textContent = "Error: " + e.message; }
+}
+async function midiLoadClips() {
+  const cat = document.getElementById("midiCatFilter").value;
+  try {
+    const { clips } = await api("/api/midilib/list" + (cat ? "?category=" + encodeURIComponent(cat) : ""));
+    const el = document.getElementById("midiClipList");
+    if (!clips.length) { el.innerHTML = '<div class="empty">No MIDI clips yet — generate or draw one below.</div>'; return; }
+    el.innerHTML = clips.map(c =>
+      '<div class="midi-row" onclick="midiLoadIntoEditor(\'' + encodeURIComponent(c.name) + '\')">' +
+      '<span style="font-weight:600;min-width:140px">' + esc(c.name) + '</span>' +
+      '<span class="muted">' + esc(c.category) + ' · ' + (c.bars ?? "-") + ' bars · ' + c.note_count + ' notes' + (c.bpm ? ' · ' + c.bpm + ' bpm' : "") + '</span>' +
+      '<button style="margin-left:auto" onclick="event.stopPropagation();midiRemoveClip(\'' + encodeURIComponent(c.name) + '\')">✕</button></div>').join("");
+  } catch (e) {}
+}
+async function midiLoadIntoEditor(nameEnc) {
+  const name = decodeURIComponent(nameEnc);
+  try {
+    const data = await api("/api/midilib/summary?name=" + encodeURIComponent(name));
+    document.getElementById("midiEditorName").value = name;
+    if (data.bpm) document.getElementById("midiEditorBpm").value = data.bpm;
+    midiGridLoadNotes(data.notes);
+    document.getElementById("midiEditorStatus").textContent = "Loaded '" + name + "'.";
+  } catch (e) { alert(e.message); }
+}
+async function midiRemoveClip(nameEnc) {
+  const name = decodeURIComponent(nameEnc);
+  if (!confirm("Remove '" + name + "' from catalog?")) return;
+  try { await api("/api/midilib/remove", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }) }); midiLoadClips(); } catch (e) { alert(e.message); }
+}
+async function midiGenerate() {
+  const name = document.getElementById("midiGenName").value.trim();
+  const st = document.getElementById("midiGenStatus");
+  if (!name) { st.textContent = "Enter a name."; return; }
+  const bpmRaw = document.getElementById("midiGenBpm").value;
+  st.textContent = "Generating…";
+  try {
+    await api("/api/midilib/generate", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, style: document.getElementById("midiGenStyle").value,
+        bars: parseInt(document.getElementById("midiGenBars").value) || 1,
+        bpm: bpmRaw ? parseFloat(bpmRaw) : null,
+        category: document.getElementById("midiGenCategory").value }) });
+    st.textContent = "Generated '" + name + "'."; midiLoadClips();
+  } catch (e) { st.textContent = "Error: " + e.message; }
+}
+function midiTabInit() {
+  if (!document.getElementById("mg-71-0")) midiInitGrid();
+  midiLoadClips();
 }
 
 // ---- Classify tab -------------------------------------------------------

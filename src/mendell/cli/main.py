@@ -15,6 +15,7 @@ from . import kit as kit_cli
 from . import kits as kits_cli
 from . import library as library_cli
 from . import midi as midi_cli
+from . import midi_catalog as midi_catalog_cli
 from . import mixer as mixer_cli
 from . import project as project_cli
 from . import registry as registry_cli
@@ -51,6 +52,7 @@ cli.add_command(library_cli.library)
 cli.add_command(registry_cli.projects)
 cli.add_command(beat_cli.beat)
 cli.add_command(midi_cli.midi)
+cli.add_command(midi_catalog_cli.midilib)
 cli.add_command(classify_cli.classify)
 cli.add_command(ace_cli.ace)
 
