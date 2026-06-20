@@ -895,6 +895,8 @@ function onRecognizeChange() {
 
 async function doAdd() {
   try {
+    if (!addName.value.trim()) { alert("Name is required."); addName.focus(); return; }
+    if (!addPath.value.trim()) { alert("Path is required."); addPath.focus(); return; }
     await api("/api/add", { method:"POST", body: JSON.stringify({
       name: addName.value.trim(), path: addPath.value.trim(), tags: addTags.value,
       recognize: document.getElementById("addRecognize").value,

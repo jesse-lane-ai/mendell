@@ -602,6 +602,9 @@ def add(
     name: str, path: str, *, tags: list[str] | None = None, analyze: bool = False,
     recognize: str | None = None,
 ) -> dict[str, Any]:
+    if not (name or "").strip():
+        raise BadInputError("library name is required (cannot be empty)")
+    name = name.strip()
     folder = Path(path).expanduser().resolve()
     if not folder.is_dir():
         raise BadInputError(f"folder not found: {path}")
