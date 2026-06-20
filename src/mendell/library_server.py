@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import arrange_view as arrange_view_mod
 from . import beat as beat_mod
 from . import beat_random32
 from . import config as config_mod
@@ -128,6 +129,12 @@ class _Handler(BaseHTTPRequestHandler):
                 if not name:
                     raise MendellError("name is required", code=1)
                 self._send_json({"ok": True, "data": kits_mod.show(name)})
+            elif path == "/api/arrange/view":
+                proj_path = query.get("path", [None])[0]
+                if not proj_path:
+                    raise MendellError("path is required", code=1)
+                data = arrange_view_mod.view(Path(proj_path).expanduser())
+                self._send_json({"ok": True, "data": data})
             elif path == "/api/midilib/list":
                 category = query.get("category", [None])[0] or None
                 self._send_json({"ok": True, "data": midi_catalog_mod.list_clips(category=category)})
@@ -272,6 +279,34 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/midilib/remove":
                 data = midi_catalog_mod.remove(payload["name"])
                 self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/random-loop":
+                data = arrange_view_mod.random_loop(
+                    Path(payload["path"]).expanduser(), payload["track"],
+                    bars=int(payload.get("bars") or 8),
+                    library=payload.get("library") or None,
+                    seed=payload.get("seed") or None,
+                    start_bar=int(payload.get("start_bar") or 1),
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/random-kit":
+                data = arrange_view_mod.random_kit(
+                    Path(payload["path"]).expanduser(),
+                    name=payload.get("name") or None,
+                    seed=payload.get("seed") or None,
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/random-clip":
+                data = arrange_view_mod.random_clip(
+                    Path(payload["path"]).expanduser(), payload["track"],
+                    style=payload.get("style") or "lofi",
+                    bars=int(payload.get("bars") or 4),
+                    seed=payload.get("seed") or None,
+                    start_bar=int(payload.get("start_bar") or 1),
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/new-project":
+                data = self._beat_new_project(payload)
+                self._send_json({"ok": True, "data": data})
             else:
                 self._send(404, b"not found", "text/plain")
         except Exception as err:  # noqa: BLE001
@@ -284,6 +319,22 @@ class _Handler(BaseHTTPRequestHandler):
         if not name:
             raise MendellError("project name is required", code=1)
         return name
+
+    def _beat_new_project(self, payload: dict) -> dict:
+        """Scaffold a bare project from the arrangement-view UI's New Project dialog."""
+        from . import project as project_mod
+
+        name = self._require_name(payload)
+        parent, base = config_mod.resolve_project_parent(name)
+        project_dir = project_mod.create(
+            parent, base,
+            bpm=float(payload.get("bpm") or 120),
+            key=payload.get("key") or "C",
+            scale=payload.get("scale") or "minor",
+            time_sig=payload.get("time_sig") or "4/4",
+        )
+        registry_mod.record_safe(project_dir)
+        return {"path": str(project_dir), "name": base}
 
     def _beat_new(self, payload: dict) -> dict:
         name = self._require_name(payload)
@@ -486,6 +537,7 @@ _PAGE = r"""<!DOCTYPE html>
   <nav class="tabs">
     <button id="tab-library" class="tab active" onclick="showTab('library')">Library</button>
     <button id="tab-projects" class="tab" onclick="showTab('projects')">Projects</button>
+    <button id="tab-arrange" class="tab" onclick="showTab('arrange')">Arrangement</button>
     <button id="tab-kits" class="tab" onclick="showTab('kits')">Kits</button>
     <button id="tab-midi" class="tab" onclick="showTab('midi')">MIDI</button>
     <button id="tab-classify" class="tab" onclick="showTab('classify')">Classify</button>
@@ -497,6 +549,15 @@ _PAGE = r"""<!DOCTYPE html>
   <span id="projActions" style="display:none">
     <button onclick="loadProjects()">Refresh</button>
     <button class="primary" onclick="openBeatDlg()">+ New beat</button>
+  </span>
+  <span id="arrActions" style="display:none">
+    <select id="arrProject" onchange="loadArrangeView()" style="min-width:200px">
+      <option value="">— pick a project —</option>
+    </select>
+    <button onclick="newProjDlg.showModal()">+ New project</button>
+    <button class="primary" onclick="randomFill('loop')">Random loop</button>
+    <button class="primary" onclick="randomFill('kit')">Random kit</button>
+    <button class="primary" onclick="randomFill('clip')">Random clip</button>
   </span>
   <span id="kitsActions" style="display:none">
     <button onclick="loadKits()">Refresh</button>
@@ -527,6 +588,12 @@ _PAGE = r"""<!DOCTYPE html>
 
 <section id="projectsView" style="display:none">
   <div id="projects"></div>
+</section>
+
+<section id="arrangeView" style="display:none; padding:16px 20px; width:100%">
+  <div id="arrMeta" class="muted" style="margin-bottom:12px"></div>
+  <div id="arrGrid" style="overflow-x:auto"></div>
+  <div id="arrEmpty" class="empty">Select a project above to view its arrangement.</div>
 </section>
 
 <section id="kitsView" style="display:none; padding:16px 20px; width:100%">
@@ -611,6 +678,20 @@ _PAGE = r"""<!DOCTYPE html>
     <pre id="cpResult" style="background:#181a1f;border-radius:4px;padding:.8rem;margin:12px 0 0;min-height:3rem;white-space:pre-wrap"></pre>
   </div>
 </section>
+
+<dialog id="newProjDlg">
+  <h3>New project</h3>
+  <label>Name</label><input id="npName" placeholder="my-beat">
+  <label>BPM</label><input id="npBpm" type="number" value="120" min="20" max="300">
+  <label>Key</label>
+  <select id="npKey"><option>C</option><option>C#</option><option>D</option><option>D#</option><option>E</option><option>F</option><option>F#</option><option>G</option><option>G#</option><option>A</option><option>A#</option><option>B</option></select>
+  <label>Scale</label>
+  <select id="npScale"><option>minor</option><option>major</option></select>
+  <div class="row">
+    <button onclick="newProjDlg.close()">Cancel</button>
+    <button class="primary" onclick="createArrProject()">Create</button>
+  </div>
+</dialog>
 
 <dialog id="addDlg">
   <h3>Register a sample folder</h3>
@@ -833,6 +914,8 @@ const TABS = {
   library:  { view: "libraryView",  actions: "libActions",      disp: "grid" },
   projects: { view: "projectsView", actions: "projActions",     disp: "block",
               onShow: () => { if (!projectsLoaded) loadProjects(); } },
+  arrange:  { view: "arrangeView",  actions: "arrActions",      disp: "block",
+              onShow: () => arrTabInit() },
   kits:     { view: "kitsView",     actions: "kitsActions",     disp: "block",
               onShow: () => loadKits() },
   midi:     { view: "midiView",     actions: "midiActions",     disp: "block",
@@ -991,6 +1074,111 @@ async function doBeat() {
 }
 
 loadBackends(); loadLibs(); search();
+// ---- Arrangement tab ----------------------------------------------------
+let _arrProjectPath = null;
+async function arrTabInit() {
+  try {
+    const { projects } = await api("/api/projects");
+    const sel = document.getElementById("arrProject");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— pick a project —</option>';
+    (projects || []).forEach(p => {
+      const o = document.createElement("option");
+      o.value = p.path;
+      o.textContent = p.name + (p.bpm ? "  " + p.bpm + " BPM" : "");
+      sel.appendChild(o);
+    });
+    if (cur) sel.value = cur;
+  } catch (e) {}
+  document.getElementById("arrEmpty").style.display = _arrProjectPath ? "none" : "";
+}
+async function loadArrangeView() {
+  const path = document.getElementById("arrProject").value;
+  if (!path) {
+    _arrProjectPath = null;
+    document.getElementById("arrGrid").innerHTML = "";
+    document.getElementById("arrMeta").textContent = "";
+    document.getElementById("arrEmpty").style.display = "";
+    return;
+  }
+  _arrProjectPath = path;
+  document.getElementById("arrEmpty").style.display = "none";
+  try {
+    const snap = await api("/api/arrange/view?path=" + encodeURIComponent(path));
+    renderArrangeGrid(snap);
+  } catch (e) {
+    document.getElementById("arrGrid").innerHTML = '<p style="color:#ff6b6b">Error: ' + esc(e.message) + '</p>';
+  }
+}
+function renderArrangeGrid(snap) {
+  document.getElementById("arrMeta").textContent =
+    snap.bpm + " BPM · " + snap.time_sig + " · " + snap.total_bars + " bars";
+  const totalBars = snap.total_bars || 32;
+  const tracks = snap.tracks || [];
+  const COLOURS = ["#3b5bdb","#2f9e44","#c2410c","#7c3aed","#0e7490","#b45309"];
+  let html = '<div style="display:grid;grid-template-columns:120px repeat(' + totalBars +
+    ',minmax(24px,1fr));gap:2px;font-size:11px;min-width:' + (120 + totalBars * 26) + 'px">';
+  html += '<div class="muted" style="padding:4px 6px">Track</div>';
+  for (let b = 1; b <= totalBars; b++) html += '<div class="muted" style="text-align:center;padding:2px 0">' + b + '</div>';
+  tracks.forEach((track, ti) => {
+    const colour = COLOURS[ti % COLOURS.length];
+    const barMap = {};
+    (track.placements || []).forEach(p => {
+      for (let b = p.start_bar; b < p.start_bar + p.length_bars && b <= totalBars; b++)
+        barMap[b] = { clip: p.clip, start: p.start_bar, len: p.length_bars };
+    });
+    const badge = ({midi:"M",audio:"A",sampler:"S"})[track.type] || "?";
+    html += '<div style="padding:4px 6px;background:#1d2026;border-radius:4px;display:flex;align-items:center;gap:4px;overflow:hidden">' +
+      '<span style="background:' + colour + ';color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(track.name) + '">' + esc(track.name) + '</span></div>';
+    let b = 1;
+    while (b <= totalBars) {
+      const cell = barMap[b];
+      if (cell && b === cell.start) {
+        const span = Math.min(cell.len, totalBars - b + 1);
+        html += '<div style="grid-column:span ' + span + ';background:' + colour +
+          ';border-radius:4px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#fff" title="' +
+          esc(cell.clip) + '">' + esc(cell.clip) + '</div>';
+        b += span;
+      } else {
+        html += '<div style="background:#1d2026;border-radius:4px"></div>';
+        b++;
+      }
+    }
+  });
+  if (!tracks.length) html += '<div style="grid-column:1/-1;color:#8b93a1;padding:20px;text-align:center">No tracks yet — use the random fill buttons.</div>';
+  html += "</div>";
+  document.getElementById("arrGrid").innerHTML = html;
+}
+async function randomFill(kind) {
+  if (!_arrProjectPath) { alert("Pick a project first."); return; }
+  const payload = { path: _arrProjectPath };
+  let endpoint;
+  if (kind === "loop") { payload.track = "drums"; payload.bars = 8; endpoint = "/api/arrange/random-loop"; }
+  else if (kind === "kit") { endpoint = "/api/arrange/random-kit"; }
+  else { payload.track = "drums"; payload.style = "lofi"; payload.bars = 4; endpoint = "/api/arrange/random-clip"; }
+  try {
+    await api(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    await loadArrangeView();
+  } catch (e) { alert("Random fill failed: " + e.message); }
+}
+async function createArrProject() {
+  const name = document.getElementById("npName").value.trim();
+  if (!name) { alert("Enter a project name."); return; }
+  try {
+    const data = await api("/api/arrange/new-project", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name,
+        bpm: parseFloat(document.getElementById("npBpm").value) || 120,
+        key: document.getElementById("npKey").value,
+        scale: document.getElementById("npScale").value }) });
+    document.getElementById("newProjDlg").close();
+    await arrTabInit();
+    document.getElementById("arrProject").value = data.path;
+    await loadArrangeView();
+  } catch (e) { alert("Failed to create project: " + e.message); }
+}
+
 // ---- Kits tab -----------------------------------------------------------
 let _selectedKit = null;
 async function loadKits() {

@@ -637,6 +637,23 @@ registry-only metadata; it is **not** written into `project.toml`.
 Recording is best-effort: if the registry write ever fails, project creation still
 succeeds (project.toml is already on disk) — the registry never blocks core work.
 
+### Web UI (`mendell library serve`)
+
+An optional, thin browser front-end over the same JSON API — a single stdlib-served
+page (no extra deps), launched with `mendell library serve [--host H] [--port P]
+[--no-open]`. It is a convenience layer, never a replacement for the CLI: every action
+maps to a command/endpoint documented here. Tabs:
+
+- **Library** — browse/search registered folders, audition samples, re-scan, add folders.
+- **Projects** — list registered projects, preview/render their latest export, create
+  beats (`beat new` / `make` / `random32`).
+- **Arrangement** — the track×bar grid (*Arrangement View* above): pick or create a
+  project and random-fill loops/kits/clips.
+- **Kits** — create, quick-build, inspect, and apply *Drum Kits*.
+- **MIDI** — the *MIDI Catalog*: generate from a style preset or draw a pattern in a
+  clickable step grid, then save it to the catalog.
+- **Classify** — probe a path through the name-based classifier and see the derived fields.
+
 ### Drum Kits (global)
 
 A named, reusable collection of drum one-shots mapped to General MIDI percussion
@@ -774,6 +791,33 @@ mendell arrange place <project> <track> <clip> --bar 1
 mendell arrange remove <project> <track> --bar 1
 mendell arrange list <project> [--json]
 mendell arrange set-loop <project> --in 1 --out 16
+```
+
+### Arrangement View
+
+A read/aggregate view of a project's arrangement as a track×bar grid, plus
+random-fill helpers — the backing API for the web UI's Arrangement tab, also usable
+from the CLI. `show` returns a grid-friendly snapshot (`{bpm, time_sig, beats_per_bar,
+total_bars, tracks:[{name, type, placements:[{clip, start_bar, length_bars}]}]}`). The
+`random-*` helpers pull from the sample library / kit / MIDI-catalog features and place
+the result into the arrangement; they create the target track if it doesn't exist yet,
+so they work on a freshly scaffolded project. `--seed` makes any random pick
+reproducible.
+
+```bash
+# Grid snapshot of the arrangement (tracks, types, placements)
+mendell arrview show <project> [--json]
+
+# Place a random audio loop from the library onto <track> (an audio track is
+# created if missing); marks the clip looping
+mendell arrview random-loop <project> <track> [--bars N] [--start-bar B] [--library <name>] [--seed <int>] [--json]
+
+# Load a randomly chosen kit onto a sampler track (defaults to a 'kit' track)
+mendell arrview random-kit <project> [--name <track>] [--seed <int>] [--json]
+
+# Generate a random drum clip (boom-bap/lofi/trap) onto <track> (a midi track is
+# created if missing) and place it
+mendell arrview random-clip <project> <track> [--style ...] [--bars N] [--start-bar B] [--seed <int>] [--json]
 ```
 
 ### Sampler
