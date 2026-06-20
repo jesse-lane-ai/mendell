@@ -636,13 +636,13 @@ _PAGE = r"""<!DOCTYPE html>
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
     <div class="card">
       <h3>Create kit</h3>
-      <input id="kitCreateName" placeholder="kit name">
+      <span style="display:flex;gap:4px"><input id="kitCreateName" placeholder="kit name (blank = random)" style="flex:1"><button type="button" title="random name" onclick="slugInto('kitCreateName')">🎲</button></span>
       <input id="kitCreateDesc" placeholder="description (optional)">
       <button class="primary" onclick="kitCreate()">Create</button>
     </div>
     <div class="card">
       <h3>Quick kit</h3>
-      <input id="kitQuickName" placeholder="kit name">
+      <span style="display:flex;gap:4px"><input id="kitQuickName" placeholder="kit name (blank = random)" style="flex:1"><button type="button" title="random name" onclick="slugInto('kitQuickName')">🎲</button></span>
       <input id="kitQuickLib" placeholder="library (optional)">
       <input id="kitQuickSeed" type="number" placeholder="seed (optional)">
       <button class="primary" onclick="kitQuick()">Quick kit (random one-shots)</button>
@@ -700,7 +700,7 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="card" style="margin-bottom:20px;max-width:none">
     <h3>Generate from style preset</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-      <input id="midiGenName" placeholder="pattern name" style="width:140px">
+      <input id="midiGenName" placeholder="pattern name (blank = random)" style="width:140px"><button type="button" title="random name" onclick="slugInto('midiGenName')">🎲</button>
       <select id="midiGenStyle"><option>boom-bap</option><option>lofi</option><option>trap</option></select>
       <input id="midiGenBars" type="number" value="1" min="1" max="32" style="width:70px" title="bars">
       <input id="midiGenBpm" type="number" placeholder="bpm" style="width:70px">
@@ -738,7 +738,7 @@ _PAGE = r"""<!DOCTYPE html>
 
 <dialog id="newProjDlg">
   <h3>New project</h3>
-  <label>Name</label><input id="npName" placeholder="my-beat">
+  <label>Name</label><span style="display:flex;gap:4px"><input id="npName" placeholder="blank = random" style="flex:1"><button type="button" title="random name" onclick="slugInto('npName')">🎲</button></span>
   <label>BPM</label><input id="npBpm" type="number" value="120" min="20" max="300">
   <label>Key</label>
   <select id="npKey"><option>C</option><option>C#</option><option>D</option><option>D#</option><option>E</option><option>F</option><option>F#</option><option>G</option><option>G#</option><option>A</option><option>A#</option><option>B</option></select>
@@ -752,7 +752,7 @@ _PAGE = r"""<!DOCTYPE html>
 
 <dialog id="addDlg">
   <h3>Register a sample folder</h3>
-  <label>Name</label><input id="addName" placeholder="my-drums">
+  <label>Name</label><span style="display:flex;gap:4px"><input id="addName" placeholder="blank = random" style="flex:1"><button type="button" title="random name" onclick="slugInto('addName')">🎲</button></span>
   <label>Folder path</label><input id="addPath" placeholder="/home/you/samples/drums">
   <label>Tags (comma-separated)</label><input id="addTags" placeholder="drums,lofi">
   <label>Sound recognition</label>
@@ -785,7 +785,7 @@ _PAGE = r"""<!DOCTYPE html>
   </select>
   <p id="beatModeHelp" class="muted" style="font-size:12px;margin:8px 0 0"></p>
 
-  <label>Project name</label><input id="beatName" placeholder="my-beat">
+  <label>Project name</label><span style="display:flex;gap:4px"><input id="beatName" placeholder="blank = random" style="flex:1"><button type="button" title="random name" onclick="slugInto('beatName')">🎲</button></span>
 
   <div id="f-style"><label>Style</label>
     <select id="beatStyle" style="width:100%"></select></div>
@@ -830,6 +830,27 @@ function esc(s) {
 }
 const player = document.getElementById("player");
 player.onended = () => { if (curBtn) { curBtn.classList.remove("on"); curBtn.textContent="▶"; curBtn=null; } };
+
+// Random word-slug generator for name fields (library/project/kit/pattern).
+const SLUG_ADJ = ["amber","brisk","cosmic","dusty","electric","fuzzy","golden","hazy",
+  "indigo","jade","lucid","mellow","neon","onyx","plush","quiet","rusty","silky",
+  "tidal","umber","velvet","warm","wild","zesty","mystic","crisp","lush","bold"];
+const SLUG_NOUN = ["otter","comet","grove","harbor","lotus","maple","nebula","onyx",
+  "pulse","quartz","raven","summit","tundra","vapor","willow","zenith","ember","fjord",
+  "glade","heron","koi","lagoon","monsoon","oasis","prairie","reef","saffron","thicket"];
+function randomSlug() {
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  return pick(SLUG_ADJ) + "-" + pick(SLUG_NOUN) + "-" + Math.floor(Math.random() * 90 + 10);
+}
+// Fill an input with a fresh slug (used by the 🎲 buttons next to name fields).
+function slugInto(id) { const el = document.getElementById(id); el.value = randomSlug(); el.focus(); }
+// Return the trimmed value of a name input, generating + writing back a slug if blank.
+function nameOrSlug(id) {
+  const el = document.getElementById(id);
+  let v = el.value.trim();
+  if (!v) { v = randomSlug(); el.value = v; }
+  return v;
+}
 
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -952,10 +973,9 @@ function onRecognizeChange() {
 
 async function doAdd() {
   try {
-    if (!addName.value.trim()) { alert("Name is required."); addName.focus(); return; }
     if (!addPath.value.trim()) { alert("Path is required."); addPath.focus(); return; }
     await api("/api/add", { method:"POST", body: JSON.stringify({
-      name: addName.value.trim(), path: addPath.value.trim(), tags: addTags.value,
+      name: nameOrSlug("addName"), path: addPath.value.trim(), tags: addTags.value,
       recognize: document.getElementById("addRecognize").value,
       captioner_load: document.getElementById("addCaptionerLoad").value,
       analyze: document.getElementById("addAnalyze").checked,
@@ -1110,7 +1130,7 @@ async function openBeatDlg() {
 async function doBeat() {
   const mode = document.getElementById("beatMode").value;
   const v = id => document.getElementById(id).value.trim();
-  const body = { name: v("beatName") };
+  const body = { name: nameOrSlug("beatName") };
   if (mode !== "random32") body.style = v("beatStyle");
   if (mode !== "new") {
     body.bpm = v("beatBpm"); body.key = v("beatKey"); body.export = v("beatExport");
@@ -1222,8 +1242,7 @@ async function randomFill(kind) {
   } catch (e) { alert("Random fill failed: " + e.message); }
 }
 async function createArrProject() {
-  const name = document.getElementById("npName").value.trim();
-  if (!name) { alert("Enter a project name."); return; }
+  const name = nameOrSlug("npName");
   try {
     const data = await api("/api/arrange/new-project", { method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1363,8 +1382,7 @@ async function kitPadSet(note) {
   } catch (e) { document.getElementById("kpStatus").textContent = e.message; }
 }
 async function kitCreate() {
-  const name = document.getElementById("kitCreateName").value.trim();
-  if (!name) { alert("Kit name required"); return; }
+  const name = nameOrSlug("kitCreateName");
   try {
     const data = await api("/api/kits/create", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, description: document.getElementById("kitCreateDesc").value.trim() }) });
@@ -1374,8 +1392,7 @@ async function kitCreate() {
   } catch (e) { alert(e.message); }
 }
 async function kitQuick() {
-  const name = document.getElementById("kitQuickName").value.trim();
-  if (!name) { alert("Kit name required"); return; }
+  const name = nameOrSlug("kitQuickName");
   document.getElementById("kitStatus").textContent = "Building quick kit…";
   try {
     const data = await api("/api/kits/quick", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1507,9 +1524,8 @@ async function midiRemoveClip(nameEnc) {
     body: JSON.stringify({ name }) }); midiLoadClips(); } catch (e) { alert(e.message); }
 }
 async function midiGenerate() {
-  const name = document.getElementById("midiGenName").value.trim();
+  const name = nameOrSlug("midiGenName");
   const st = document.getElementById("midiGenStatus");
-  if (!name) { st.textContent = "Enter a name."; return; }
   const bpmRaw = document.getElementById("midiGenBpm").value;
   st.textContent = "Generating…";
   try {
