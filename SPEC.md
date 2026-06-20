@@ -575,24 +575,10 @@ straight to `kit load` / `sampler map add` / `clip import`.
 ] } }
 ```
 
-During indexing, classification reads **both the filename and every parent-folder
-name** before falling back to a content recognizer: a path like
-`.../House Loops/Cm 124bpm/bassline.wav` yields `kind=loop`, `key=C`, `scale=minor`,
-`bpm=124`, `category=bass` from names alone. Names are parsed first and per-field —
-only the fields still unresolved trigger the configured recognizer (e.g. the ACE-Step
-captioner), so a confident filename/folder answer is never re-derived. You can probe
-this name-based classifier directly on any path, without registering anything:
-
-```bash
-# Derive {kind, category, key, scale, bpm, instruments, confidence, source} from a
-# path's filename + parent folders. --with-acestep also reports whether the
-# inconclusive-field fallback would invoke the ACE-Step captioner.
-mendell classify probe <path> [--with-acestep] [--json]
-```
-
 Out of scope for v1: copying/syncing library contents into projects (samples are still
 copied into `<project>/samples/` on use, exactly as they are today — the library only
-stores *references*), and remote/cloud folders (local paths only).
+stores *references*), audio analysis/tagging beyond filename heuristics, and remote/cloud
+folders (local paths only).
 
 ### Project Registry
 
@@ -636,90 +622,6 @@ registry-only metadata; it is **not** written into `project.toml`.
 
 Recording is best-effort: if the registry write ever fails, project creation still
 succeeds (project.toml is already on disk) — the registry never blocks core work.
-
-### Web UI (`mendell library serve`)
-
-An optional, thin browser front-end over the same JSON API — a single stdlib-served
-page (no extra deps), launched with `mendell library serve [--host H] [--port P]
-[--no-open]`. It is a convenience layer, never a replacement for the CLI: every action
-maps to a command/endpoint documented here. Tabs:
-
-- **Library** — browse/search registered folders, audition samples, re-scan, add folders.
-- **Projects** — list registered projects, preview/render their latest export, create
-  beats (`beat new` / `make` / `random32`).
-- **Arrangement** — the track×bar grid (*Arrangement View* above): pick or create a
-  project and random-fill loops/kits/clips.
-- **Kits** — create, quick-build, inspect, and apply *Drum Kits*.
-- **MIDI** — the *MIDI Catalog*: generate from a style preset or draw a pattern in a
-  clickable step grid, then save it to the catalog.
-- **Classify** — probe a path through the name-based classifier and see the derived fields.
-
-### Drum Kits (global)
-
-A named, reusable collection of drum one-shots mapped to General MIDI percussion
-notes — the saved, cross-project counterpart to `kit load`. Kits live in the shared
-`library.db` (`kits` + `kit_slots` tables; same DB as the sample library and project
-registry, overridable via `MENDELL_LIBRARY_CONFIG`), so a kit assembled once can be
-applied to any project. Slots use the same drum vocabulary (`kick/snare/hat/clap/tom/
-crash/rim/perc/...`) and GM notes as `kit load`, `beat new`, and `midi generate`, so
-kits compose with all of them. All writes are idempotent (create-or-update).
-
-```bash
-# Create (or update) an empty named kit
-mendell kits create <name> [--description <text>] [--json]
-
-# Add (or replace) one slot. <note-or-category> accepts a GM note number,
-# a drum category keyword (kick/snare/...), or a note name (C3). <path> is a
-# sample file or a "<library>/<relative-path>" library ref (resolved like
-# sampler map add / clip import).
-mendell kits add <kit> <note-or-category> <path> [--name <slot-name>] [--json]
-
-# Assemble a kit automatically — picks one random one-shot per core drum role
-# from the sample library. --library scopes the search to one registered folder;
-# --seed makes the picks reproducible.
-mendell kits quick <name> [--library <name>] [--seed <int>] [--json]
-
-# List / inspect
-mendell kits list [--json]
-mendell kits show <name> [--json]
-
-# Map every slot onto a project (creates/reuses the sampler track) — idempotent,
-# same output shape as `kit load`
-mendell kits apply <kit> <project> <track> [--json]
-
-# Drop a kit (sample files on disk are untouched)
-mendell kits remove <name> [--json]
-```
-
-### MIDI Catalog (global)
-
-A global catalog of reusable MIDI clips/patterns, stored in `library.db` (`midi_clips`
-table) with the `.mid` files copied into a `midi_catalog/` store next to the DB. The
-cross-project counterpart to per-project MIDI clips: generate or draw a pattern once,
-then import it into any project. Generation shares the `boom-bap/lofi/trap` style
-presets and GM percussion notes used by `beat new` and `midi generate`, so cataloged
-clips compose with kits. Idempotent on `name`.
-
-```bash
-# Register an existing .mid under a catalog name (reads bars + note count)
-mendell midilib import <path> --name <name> [--category drums|bass|melody|chords|perc|other] [--json]
-
-# Generate a drum pattern from a style preset and catalog it
-mendell midilib generate <name> --style boom-bap|lofi|trap [--bars N] [--bpm <float>] [--category ...] [--json]
-
-# Build a clip from an explicit note grid (the backing API for the web step-grid
-# editor). Notes are [{pitch, start_beat, length_beats, velocity}] — supply them
-# via --notes-file <path.json> or inline --notes-json '<json>'.
-mendell midilib create <name> (--notes-file <path> | --notes-json <json>) [--bpm <float>] [--bars N] [--category ...] [--json]
-
-# List (optionally filter by --category) / inspect / parse a .mid to a note grid
-mendell midilib list [--category <cat>] [--json]
-mendell midilib show <name> [--json]
-mendell midilib summary <path> [--json]   # → {bars, ppq, bpm, notes:[...]}
-
-# Drop a cataloged clip
-mendell midilib remove <name> [--json]
-```
 
 ### Tracks
 
@@ -791,33 +693,6 @@ mendell arrange place <project> <track> <clip> --bar 1
 mendell arrange remove <project> <track> --bar 1
 mendell arrange list <project> [--json]
 mendell arrange set-loop <project> --in 1 --out 16
-```
-
-### Arrangement View
-
-A read/aggregate view of a project's arrangement as a track×bar grid, plus
-random-fill helpers — the backing API for the web UI's Arrangement tab, also usable
-from the CLI. `show` returns a grid-friendly snapshot (`{bpm, time_sig, beats_per_bar,
-total_bars, tracks:[{name, type, placements:[{clip, start_bar, length_bars}]}]}`). The
-`random-*` helpers pull from the sample library / kit / MIDI-catalog features and place
-the result into the arrangement; they create the target track if it doesn't exist yet,
-so they work on a freshly scaffolded project. `--seed` makes any random pick
-reproducible.
-
-```bash
-# Grid snapshot of the arrangement (tracks, types, placements)
-mendell arrview show <project> [--json]
-
-# Place a random audio loop from the library onto <track> (an audio track is
-# created if missing); marks the clip looping
-mendell arrview random-loop <project> <track> [--bars N] [--start-bar B] [--library <name>] [--seed <int>] [--json]
-
-# Load a randomly chosen kit onto a sampler track (defaults to a 'kit' track)
-mendell arrview random-kit <project> [--name <track>] [--seed <int>] [--json]
-
-# Generate a random drum clip (boom-bap/lofi/trap) onto <track> (a midi track is
-# created if missing) and place it
-mendell arrview random-clip <project> <track> [--style ...] [--bars N] [--start-bar B] [--seed <int>] [--json]
 ```
 
 ### Sampler
@@ -1080,6 +955,88 @@ mendell export <project> --dry-run --json
 #     "warnings": []
 # }}
 ```
+
+---
+
+### Library Bundles (import/export)
+
+Bundle the full sample library, named kits, registered projects, and MIDI clips into a single portable zip file, then restore it on another machine — or back it up locally.
+
+```
+mendell library export <out.zip> [--include <types>] [--json]
+mendell library import <bundle.zip> [--dest <dir>] [--json]
+```
+
+#### `mendell library export <out.zip>`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--include` | `samples,kits,projects,midi` | Comma-separated list of content types to bundle |
+| `--json` | off | Emit a JSON envelope |
+
+Writes a zip to `<out.zip>` containing:
+
+- `manifest.json` — schema version, creation timestamp, counts, and per-item metadata
+- `samples/<library-name>/<rel-path>` — audio files for each registered library
+- `projects/<project-name>/…` — full project directory tree for each registered project
+- `midi/<name>.mid` — every MIDI clip in the catalog
+- Kit metadata is stored in `manifest.json` (no audio files are duplicated; kit slots reference the bundled sample paths)
+
+The manifest carries all file-level metadata (category, kind, BPM, duration, instruments, caption) so import can rebuild DB rows without re-running audio analysis.
+
+Valid `--include` values: `samples`, `kits`, `projects`, `midi` (case-insensitive).
+
+**Returns** (with `--json`):
+```json
+{
+  "ok": true,
+  "data": {
+    "schema_version": "1",
+    "created_at": "2026-06-20T12:34:56+00:00",
+    "include": ["kits", "midi", "projects", "samples"],
+    "samples": [ /* per-library metadata */ ],
+    "kits": [ /* per-kit metadata */ ],
+    "projects": [ /* per-project metadata */ ],
+    "midi": [ /* per-clip metadata */ ],
+    "counts": {
+      "samples_libraries": 2,
+      "samples_files": 150,
+      "kits": 3,
+      "projects": 1,
+      "midi": 4
+    }
+  }
+}
+```
+
+#### `mendell library import <bundle.zip>`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dest <dir>` | `<zip-stem>/` (sibling of the zip) | Directory to extract files into |
+| `--json` | off | Emit a JSON envelope |
+
+Extracts all files from `<bundle.zip>` into `<dest>`, then registers samples, kits, and MIDI clips in the local library DB. All writes are idempotent (create-or-update) — safe to run multiple times.
+
+- **Samples**: each library is re-registered pointing to `<dest>/samples/<library-name>/`. File-level metadata is restored from the manifest (no re-analysis needed).
+- **Kits**: kit rows and slots are created-or-updated. Slot `source_path` values are automatically remapped to the extracted sample location when the original path is unavailable.
+- **Projects**: extracted under `<dest>/projects/<project-name>/` but not re-registered in the project registry (run `mendell projects sync <dest>/projects/<name>` to index them).
+- **MIDI**: clips are extracted and registered in the MIDI catalog (create-or-update).
+
+**Returns** (with `--json`):
+```json
+{
+  "ok": true,
+  "data": {
+    "samples": {"added": 2, "updated": 0, "skipped": 0},
+    "kits":    {"added": 3, "updated": 0, "skipped": 0},
+    "projects":{"added": 1, "skipped": 0},
+    "midi":    {"added": 4, "updated": 0, "skipped": 0}
+  }
+}
+```
+
+Exit codes follow the standard convention: `0` success, `1` bad input (file not found, invalid zip, unknown include type), `3` engine error.
 
 ---
 
