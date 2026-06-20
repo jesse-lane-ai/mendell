@@ -1,8 +1,11 @@
 """Sampler management — sample maps, ADSR envelopes, and per-slot params.
 
-A sampler TOML lives at samplers/<track>.toml; the hosting track must be of
-type `sampler`. Slots are addressed by their mapped note (the low end of a
-range counts as its identity for `set`/`remove`).
+A sampler TOML lives at samplers/<track>.toml and is the instrument hosted on
+a MIDI track (the track's notes play through it). A sampler runs in one of two
+modes: "kit" (many one-shots mapped to individual notes) or "instrument" (a
+single sample pitch-shifted across the whole note range). Slots are addressed
+by their mapped note (the low end of a range counts as its identity for
+`set`/`remove`).
 """
 
 from __future__ import annotations
@@ -23,7 +26,8 @@ from ..toml_io import read_toml, write_toml
 LOOP_MODES = ("off", "forward", "pingpong")
 AUDIO_EXTS = {".wav", ".aiff", ".aif", ".flac", ".mp3", ".ogg"}
 
-SAMPLER_DEFAULTS = {"polyphony": 8, "tune": 0}
+SAMPLER_MODES = ("kit", "instrument")
+SAMPLER_DEFAULTS = {"polyphony": 8, "tune": 0, "mode": "kit"}
 
 SLOT_DEFAULTS = {
     "vol": 100,
@@ -58,18 +62,63 @@ def save(project_dir: Path, track_name: str, data: dict[str, Any]) -> None:
     write_toml(paths.sampler_toml(project_dir, track_name), data)
 
 
-def _require_sampler_track(project_dir: Path, track_name: str) -> dict[str, Any]:
+def _require_host_track(project_dir: Path, track_name: str) -> dict[str, Any]:
+    """The sampler is an instrument hosted on a MIDI track."""
     track_data = tracks_mod.load(project_dir, track_name)
-    if track_data.get("track", {}).get("type") != "sampler":
-        raise BadInputError(f"track '{track_name}' is not a sampler track")
+    if track_data.get("track", {}).get("type") != "midi":
+        raise BadInputError(
+            f"a sampler instrument is hosted on a MIDI track; "
+            f"'{track_name}' is type '{track_data.get('track', {}).get('type')}'"
+        )
     return track_data
 
 
-def create(project_dir: Path, track_name: str) -> dict[str, Any]:
-    """Idempotent create-or-update: re-creating an existing sampler is a no-op."""
-    _require_sampler_track(project_dir, track_name)
+def create(project_dir: Path, track_name: str, *, mode: str = "kit") -> dict[str, Any]:
+    """Attach a sampler instrument to a MIDI track (idempotent).
+
+    Marks the host track as carrying a ``sampler`` instrument and writes the
+    sampler TOML if it doesn't exist yet. ``mode`` is "kit" or "instrument".
+    """
+    if mode not in SAMPLER_MODES:
+        raise BadInputError(f"invalid sampler mode '{mode}' (expected one of {list(SAMPLER_MODES)})")
+    _require_host_track(project_dir, track_name)
+    tracks_mod.set_instrument(project_dir, track_name, "sampler")
     if not exists(project_dir, track_name):
-        save(project_dir, track_name, {"sampler": dict(SAMPLER_DEFAULTS), "slots": []})
+        save(project_dir, track_name, {"sampler": {**SAMPLER_DEFAULTS, "mode": mode}, "slots": []})
+    return summary(project_dir, track_name)
+
+
+def set_mode(project_dir: Path, track_name: str, mode: str) -> dict[str, Any]:
+    """Switch a sampler between "kit" and "instrument" mode."""
+    if mode not in SAMPLER_MODES:
+        raise BadInputError(f"invalid sampler mode '{mode}' (expected one of {list(SAMPLER_MODES)})")
+    data = load(project_dir, track_name)
+    data.setdefault("sampler", dict(SAMPLER_DEFAULTS))["mode"] = mode
+    save(project_dir, track_name, data)
+    return summary(project_dir, track_name)
+
+
+def load_instrument(
+    project_dir: Path, track_name: str, sample: str, *,
+    root: str = "C3", loop: str = "off", link: bool = False,
+) -> dict[str, Any]:
+    """Make the sampler an "instrument": a single ``sample`` pitch-shifted
+    across the entire note range (0–127), rooted at ``root``.
+
+    Replaces any existing slots with one full-range, pitch-following slot.
+    """
+    create(project_dir, track_name, mode="instrument")
+    root_midi = note_name_to_midi(root)
+    stored, length_s = _store_sample(project_dir, sample, link=link)
+    slot = _new_slot(
+        note_low=0, note_high=127, root=root_midi,
+        sample=str(stored), linked=link, length_seconds=length_s,
+        loop=(loop not in ("off", "", None)),
+    )
+    data = load(project_dir, track_name)
+    data["sampler"] = {**SAMPLER_DEFAULTS, **data.get("sampler", {}), "mode": "instrument"}
+    data["slots"] = [slot]
+    save(project_dir, track_name, data)
     return summary(project_dir, track_name)
 
 

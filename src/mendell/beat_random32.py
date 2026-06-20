@@ -30,7 +30,6 @@ from . import automation as automation_mod
 from . import clips as clips_mod
 from . import engine as engine_mod
 from . import project as project_mod
-from . import routing as routing_mod
 from . import sampler as sampler_mod
 from . import tracks as tracks_mod
 from .midi_gen import write_pattern_midi
@@ -76,7 +75,7 @@ def _have_warp():
         return False
 
 # layer name -> the audible track whose volume we automate to toggle it
-_LAYER_TRACK = {"drums": "kit", "bass": "bass", "melody": "melody"}
+_LAYER_TRACK = {"drums": "drums", "bass": "bass", "melody": "melody"}
 _ALL_LAYERS = ("drums", "bass", "melody")
 
 
@@ -221,17 +220,15 @@ def render(parent, name, *, db_path=None, tempo=None, key=None, seed=None,
     bbpm = _bpm_of(con, bpath)
     mbpm = _bpm_of(con, mpath)
 
-    # --- project + drums (midi -> sampler kit) -----------------------------
+    # --- project + drums (midi track hosting a sampler kit) ----------------
     project_dir = project_mod.create(parent, name, bpm=tempo, key=key, scale="minor")
     tracks_mod.add(project_dir, DRUM_TRACK, "midi")
-    tracks_mod.add(project_dir, KIT_TRACK, "sampler")
-    sampler_mod.create(project_dir, KIT_TRACK)
-    routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
+    sampler_mod.create(project_dir, DRUM_TRACK)  # sampler instrument hosted on the MIDI track
     for cat, sample in picks.items():
         # copy (link=False) so the project is self-contained and always
         # references its own copy of the source audio — baked mutations stay
         # reversible even if the original library pack moves.
-        sampler_mod.map_add(project_dir, KIT_TRACK, note=_GM[cat], sample=sample, link=False)
+        sampler_mod.map_add(project_dir, DRUM_TRACK, note=_GM[cat], sample=sample, link=False)
 
     pattern_path = project_dir / "midi" / "drum-pattern.mid"
     write_pattern_midi(pattern_path, _DRUM_PATTERN)
@@ -292,7 +289,7 @@ def render(parent, name, *, db_path=None, tempo=None, key=None, seed=None,
         "key": key,
         "bars": ARRANGEMENT_BARS,
         "sections": len(sections),
-        "tracks": [DRUM_TRACK, KIT_TRACK, BASS_TRACK, MELODY_TRACK],
+        "tracks": [DRUM_TRACK, BASS_TRACK, MELODY_TRACK],
         "bass": os.path.basename(bpath),
         "melody": os.path.basename(mpath),
         "kit": {c: os.path.basename(p) for c, p in picks.items()},

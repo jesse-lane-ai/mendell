@@ -48,14 +48,17 @@ def _guess_note(stem: str) -> int | None:
 
 
 def _ensure_sampler_track(project_dir: Path, track_name: str) -> None:
-    """Create-or-reuse the sampler track + instrument (mirrors `track add` +
-    `sampler create`, kept idempotent so re-running `kit load` is safe)."""
+    """Create-or-reuse a MIDI track hosting a sampler instrument (idempotent, so
+    re-running `kit load` is safe). The track's own clips trigger the sampler."""
     if tracks_mod.exists(project_dir, track_name):
-        track_data = tracks_mod.load(project_dir, track_name)
-        if track_data.get("track", {}).get("type") != "sampler":
-            raise BadInputError(f"track '{track_name}' exists but is not a sampler track")
+        ttype = tracks_mod.load(project_dir, track_name).get("track", {}).get("type")
+        if ttype != "midi":
+            raise BadInputError(
+                f"track '{track_name}' exists but is type '{ttype}', not midi — "
+                "a sampler instrument is hosted on a MIDI track"
+            )
     else:
-        tracks_mod.add(project_dir, track_name, "sampler")
+        tracks_mod.add(project_dir, track_name, "midi")
     sampler_mod.create(project_dir, track_name)
 
 

@@ -60,6 +60,8 @@ def view(project_dir: Path) -> dict[str, Any]:
         }
     """
     project_dir = Path(project_dir)
+    from . import migrate as migrate_mod
+    migrate_mod.ensure_migrated(project_dir)
     tp = project_mod.timing_params(project_dir)
     arr_data = arrangement_mod.load(project_dir)
     arr_settings = {**arrangement_mod.ARRANGEMENT_DEFAULTS, **arr_data.get("arrangement", {})}
@@ -364,34 +366,26 @@ def add_kit_to_track(
 ) -> dict[str, Any]:
     """Attach a drum kit so a MIDI track's notes make sound.
 
-    Creates (or reuses) a sampler track, routes ``track`` → it, then fills it
-    from a named catalog ``kit`` or from random library one-shots.
+    Hosts a sampler instrument directly on ``track`` (in "kit" mode) and fills
+    it from a named catalog ``kit`` or from random library one-shots.
     """
     project_dir = Path(project_dir)
     ttype = _track_type(project_dir, track)
     if ttype != "midi":
         raise ValueError(f"kits attach to MIDI tracks; '{track}' is type '{ttype}'")
 
-    from . import routing as routing_mod
     from . import sampler as sampler_mod
-
-    # Reuse an existing route target if the track already feeds a sampler.
-    routes = [r["to"] for r in routing_mod.list_routes(project_dir) if r["from"] == track]
-    sampler_track = routes[0] if routes else f"{track}-kit"
-    if not tracks_mod.exists(project_dir, sampler_track):
-        tracks_mod.add(project_dir, sampler_track, "sampler")
-        sampler_mod.create(project_dir, sampler_track)
-    routing_mod.set_route(project_dir, track, sampler_track)
+    sampler_mod.create(project_dir, track, mode="kit")
 
     if kit:
         from . import kits as kits_mod
-        result = kits_mod.apply_to_project(kit, project_dir, sampler_track)
+        result = kits_mod.apply_to_project(kit, project_dir, track)
         mapped = result.get("count", 0)
     else:
         from . import beat as beat_mod
         rng = _random.Random(seed)
         out = beat_mod._fill_kit_from_library(
-            project_dir, sampler_track, set(_GM_KIT_NOTES), library=library, rng=rng
+            project_dir, track, set(_GM_KIT_NOTES), library=library, rng=rng
         )
         if not out:
             raise ValueError(
@@ -400,4 +394,4 @@ def add_kit_to_track(
             )
         mapped = len(out[0])
 
-    return {"track": track, "sampler_track": sampler_track, "kit": kit, "mapped": mapped}
+    return {"track": track, "sampler_track": track, "kit": kit, "mapped": mapped}

@@ -14,7 +14,11 @@ from .. import paths
 from ..errors import BadInputError, NotFoundError
 from ..toml_io import read_toml, write_toml
 
-VALID_TYPES = {"midi", "audio", "sampler"}
+VALID_TYPES = {"midi", "audio"}
+
+# Instrument types a MIDI track can host. Only "sampler" exists today; "synth"
+# and "vst" are reserved for future work.
+VALID_INSTRUMENTS = {"sampler"}
 
 MIXER_DEFAULTS = {
     "vol": 100,
@@ -40,7 +44,6 @@ def _new_track_data(name: str, track_type: str) -> dict[str, Any]:
         "fx_next_id": 0,
         "automation": [],
         "clips": [],
-        "routes": [],
     }
 
 
@@ -92,6 +95,7 @@ def summary(project_dir: Path, name: str) -> dict[str, Any]:
     return {
         "name": track.get("name", name),
         "type": track.get("type"),
+        "instrument": track.get("instrument"),
         "vol": mixer["vol"],
         "pan": mixer["pan"],
         "mute": mixer["mute"],
@@ -108,10 +112,10 @@ def show(project_dir: Path, name: str) -> dict[str, Any]:
     return {
         "name": track.get("name", name),
         "type": track.get("type"),
+        "instrument": track.get("instrument"),
         "mixer": mixer,
         "fx": data.get("fx", []),
         "clips": data.get("clips", []),
-        "routes": data.get("routes", []),
         "automation": data.get("automation", []),
     }
 
@@ -138,3 +142,40 @@ def set_params(project_dir: Path, name: str, *, new_name: str | None = None,
         save(project_dir, name, data)
 
     return {"changed": changed, **summary(project_dir, name)}
+
+
+# ---------------------------------------------------------------------------
+# instruments — a MIDI track hosts an instrument (today only "sampler")
+# ---------------------------------------------------------------------------
+
+def set_instrument(project_dir: Path, name: str, inst_type: str = "sampler") -> dict[str, Any]:
+    """Attach an instrument of ``inst_type`` to a MIDI track (idempotent)."""
+    if inst_type not in VALID_INSTRUMENTS:
+        raise BadInputError(
+            f"invalid instrument '{inst_type}' (expected one of {sorted(VALID_INSTRUMENTS)})"
+        )
+    data = load(project_dir, name)
+    if data.get("track", {}).get("type") != "midi":
+        raise BadInputError(
+            f"instruments attach to MIDI tracks; '{name}' is type "
+            f"'{data.get('track', {}).get('type')}'"
+        )
+    data["track"]["instrument"] = {"type": inst_type}
+    save(project_dir, name, data)
+    return summary(project_dir, name)
+
+
+def get_instrument(project_dir: Path, name: str) -> dict[str, Any] | None:
+    """Return the track's instrument descriptor, or ``None`` if it has none."""
+    return load(project_dir, name).get("track", {}).get("instrument")
+
+
+def has_instrument(project_dir: Path, name: str) -> bool:
+    return bool(get_instrument(project_dir, name))
+
+
+def clear_instrument(project_dir: Path, name: str) -> dict[str, Any]:
+    data = load(project_dir, name)
+    data.get("track", {}).pop("instrument", None)
+    save(project_dir, name, data)
+    return summary(project_dir, name)

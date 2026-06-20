@@ -61,7 +61,7 @@ def test_render_builds_full_project(tmp_path, library_db):
     assert data["key"] == "A"
     assert data["bars"] == 32
     assert data["sections"] == 4
-    assert data["tracks"] == ["drums", "kit", "bass", "melody"]
+    assert data["tracks"] == ["drums", "bass", "melody"]
     assert data["melody_treatments"] == ["clean", "octave-up", "lowpass", "reverse"]
 
     # one melody clip per section + bass + drum clips exist on disk
@@ -80,10 +80,11 @@ def test_pattern_drives_layers(tmp_path, library_db):
     data = br.render(tmp_path, "lb", db_path=library_db, seed=2,
                      export_format="wav", warp=False, pattern="layer-builder")
     assert data["pattern"] == "layer-builder"
-    # layer-builder starts melody-only -> drums (kit) silent in section 1
+    # layer-builder starts melody-only -> drums silent in section 1. The drum
+    # sampler is hosted on the "drums" track now, so its vol automation lives there.
     assert data["section_layers"][0] == ["melody"]
-    kit = tomllib.loads((tmp_path / "lb" / "tracks" / "kit.toml").read_text())
-    vol = next(a for a in kit["automation"] if a["param"] == "vol")
+    drums = tomllib.loads((tmp_path / "lb" / "tracks" / "drums.toml").read_text())
+    vol = next(a for a in drums["automation"] if a["param"] == "vol")
     assert vol["points"][0]["value"] == 0.0      # drums start muted
 
 

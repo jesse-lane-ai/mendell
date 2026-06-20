@@ -345,8 +345,8 @@ def apply_to_project(
     project_dir: Path,
     track_name: str,
 ) -> dict[str, Any]:
-    """Create (or reuse) a sampler track in *project_dir* and map all kit
-    slots onto it.  Idempotent — safe to call multiple times.
+    """Ensure *track_name* is a MIDI track hosting a sampler instrument, and map
+    all kit slots onto it.  Idempotent — safe to call multiple times.
 
     Returns a summary identical in shape to ``kit load``'s output.
     """

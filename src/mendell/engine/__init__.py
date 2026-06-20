@@ -13,6 +13,7 @@ import soundfile as sf
 
 from .. import arrangement as arrangement_mod
 from .. import clips as clips_mod
+from .. import migrate as migrate_mod
 from .. import project as project_mod
 from .. import sampler as sampler_mod
 from .. import tracks as tracks_mod
@@ -32,6 +33,17 @@ from .render import (
 EXPORT_FORMATS = {".wav": "WAV", ".mp3": "MP3"}
 DEFAULT_EXPORT_DIR = "export"
 DEFAULT_EXPORT_FORMAT = "wav"
+
+
+def _produces_audio(project_dir: Path, name: str, data: dict[str, Any]) -> bool:
+    """A track produces audio if it's an audio track, or a MIDI track that hosts
+    a sampler instrument (its notes play through the sampler)."""
+    ttype = data["track"]["type"]
+    if ttype == "audio":
+        return True
+    if ttype == "midi" and data["track"].get("instrument") and sampler_mod.exists(project_dir, name):
+        return True
+    return False
 
 
 def _clip_length_frames(clip_data: dict[str, Any], tp: dict[str, Any]) -> int:
@@ -103,6 +115,7 @@ def preview(project_dir: Path, *, out: str | None = None, format: str | None = N
     tracks, FX chains, where the file would land — without rendering any audio
     or touching disk. Lets an agent sanity-check a long render before paying
     for it, and surfaces missing-file/missing-binary problems up front."""
+    migrate_mod.ensure_migrated(project_dir)
     tp = project_mod.timing_params(project_dir)
     proj_data = project_mod.load(project_dir)
 
@@ -118,7 +131,7 @@ def preview(project_dir: Path, *, out: str | None = None, format: str | None = N
 
     track_data = {name: tracks_mod.load(project_dir, name) for name in track_names}
     mixers = {name: {**tracks_mod.MIXER_DEFAULTS, **data.get("mixer", {})} for name, data in track_data.items()}
-    audio_producing = {name for name, data in track_data.items() if data["track"]["type"] in ("audio", "sampler")}
+    audio_producing = {name for name, data in track_data.items() if _produces_audio(project_dir, name, data)}
     soloed = [name for name in audio_producing if mixers[name]["solo"]]
     active = set(soloed) if soloed else {name for name in audio_producing if not mixers[name]["mute"]}
 
@@ -130,7 +143,7 @@ def preview(project_dir: Path, *, out: str | None = None, format: str | None = N
         data = track_data[name]
         ttype = data["track"]["type"]
         track_placements = [p for p in placements if p["track"] == name]
-        is_renderable = ttype in ("audio", "sampler")
+        is_renderable = _produces_audio(project_dir, name, data)
 
         tracks_plan.append({
             "name": name,
@@ -154,12 +167,12 @@ def preview(project_dir: Path, *, out: str | None = None, format: str | None = N
                     )
                 if clip.get("warp", "off") != "off":
                     needs_rubberband = True
-        elif ttype == "sampler" and sampler_mod.exists(project_dir, name):
+        elif ttype == "midi" and data["track"].get("instrument") and sampler_mod.exists(project_dir, name):
             sampler_data = sampler_mod.load(project_dir, name)
             for slot in sampler_data.get("slots", []):
                 if not Path(slot["sample"]).is_file():
                     warnings.append(
-                        f"sampler track '{name}', note {slot.get('note')}: sample file missing — "
+                        f"track '{name}' sampler, note {slot.get('note')}: sample file missing — "
                         f"'{slot['sample']}' (re-map it with `mendell sampler map add`)"
                     )
 
@@ -187,6 +200,7 @@ def preview(project_dir: Path, *, out: str | None = None, format: str | None = N
 
 def export(project_dir: Path, *, out: str | None = None, format: str | None = None,
            stems: bool = False, progress: bool = False) -> dict[str, Any]:
+    migrate_mod.ensure_migrated(project_dir)
     tp = project_mod.timing_params(project_dir)
     proj_data = project_mod.load(project_dir)
     master = {**project_mod.MASTER_DEFAULTS, **proj_data.get("master", {})}
@@ -212,35 +226,25 @@ def export(project_dir: Path, *, out: str | None = None, format: str | None = No
     track_data = {name: tracks_mod.load(project_dir, name) for name in track_names}
     mixers = {name: {**tracks_mod.MIXER_DEFAULTS, **data.get("mixer", {})} for name, data in track_data.items()}
 
-    # Mute/solo gate the audio-*producing* tracks only (audio, sampler). MIDI
-    # tracks carry no audio of their own — gating note-gathering by their solo
-    # state would mean soloing a Sampler track goes silent unless its upstream
-    # MIDI track is *also* soloed, which is surprising. Notes always flow along
-    # routes; mute/solo decides which rendered buffers reach the master mix.
-    audio_producing = {name for name, data in track_data.items() if data["track"]["type"] in ("audio", "sampler")}
+    # Mute/solo gate the audio-*producing* tracks: audio tracks, and MIDI tracks
+    # that host a sampler instrument (their own notes play through that sampler).
+    audio_producing = {name for name, data in track_data.items() if _produces_audio(project_dir, name, data)}
     soloed = [name for name in audio_producing if mixers[name]["solo"]]
     active = set(soloed) if soloed else {name for name in audio_producing if not mixers[name]["mute"]}
 
     if progress:
         emit_event({"event": "export_progress", "pct": 0})
 
-    # Gather MIDI note events and route them into every Sampler track they're
-    # connected to (many-to-many): one MIDI track can drive several samplers
-    # (layering), one sampler can receive from several MIDI tracks.
-    sampler_inputs: dict[str, list] = {name: [] for name in audio_producing if track_data[name]["track"]["type"] == "sampler"}
-    for name, data in track_data.items():
-        if data["track"]["type"] != "midi":
-            continue
-        events = gather_midi_events(ctx, name)
-        for dest in data.get("routes", []):
-            if dest in sampler_inputs:
-                sampler_inputs[dest].extend(events)
+    # A MIDI track's notes play through its own hosted sampler instrument.
+    sampler_inputs: dict[str, list] = {}
+    for name in audio_producing:
+        if track_data[name]["track"]["type"] == "midi":
+            sampler_inputs[name] = gather_midi_events(ctx, name)
 
     if progress:
         emit_event({"event": "export_progress", "pct": 15})
 
-    renderable = [name for name in track_names if track_data[name]["track"]["type"] in ("audio", "sampler")]
-    active_renderable = [name for name in renderable if name in active]
+    active_renderable = [name for name in track_names if name in active]
 
     track_buffers: dict[str, np.ndarray] = {}
     n = max(len(active_renderable), 1)

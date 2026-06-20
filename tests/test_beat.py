@@ -147,7 +147,10 @@ def test_make_creates_expected_tracks(tmp_path):
     project_dir = tmp_path / "trk"
     track_names = {t["name"] for t in tracks_mod.list_tracks(project_dir)}
     assert beat.DRUM_TRACK in track_names
-    assert beat.KIT_TRACK in track_names
+    # The sampler is now an instrument hosted on the MIDI drum track (no
+    # separate sampler track).
+    drums = tracks_mod.show(project_dir, beat.DRUM_TRACK)
+    assert drums["instrument"] == {"type": "sampler"}
 
 
 # --- beat from-library ------------------------------------------------------
@@ -217,7 +220,8 @@ def test_new_fills_kit_from_library(tmp_path, monkeypatch):
     notes = {m["note"] for m in out["kit"]}
     assert {"C2", "D2", "F#2"} <= notes  # GM 36/38/42
     track_names = {t["name"] for t in tracks_mod.list_tracks(project_dir)}
-    assert {beat.DRUM_TRACK, beat.KIT_TRACK} <= track_names
+    assert beat.DRUM_TRACK in track_names
+    assert tracks_mod.show(project_dir, beat.DRUM_TRACK)["instrument"] == {"type": "sampler"}
     assert arrangement_mod.load(project_dir)["arrangement"]["length"] == 4.0
     # Reproducible: same seed -> same kit refs.
     out2 = beat.new(tmp_path, "loop2", style="lofi", bars=4, seed=5)

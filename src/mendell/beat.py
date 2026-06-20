@@ -21,7 +21,6 @@ from . import engine as engine_mod
 from . import kit as kit_mod
 from . import library as library_mod
 from . import project as project_mod
-from . import routing as routing_mod
 from . import sampler as sampler_mod
 from . import tracks as tracks_mod
 from .errors import BadInputError
@@ -145,14 +144,12 @@ def new(
         parent, name, bpm=preset["bpm"], key=preset["key"], scale=preset["scale"], genre=style
     )
     tracks_mod.add(project_dir, DRUM_TRACK, "midi")
-    tracks_mod.add(project_dir, KIT_TRACK, "sampler")
-    sampler_mod.create(project_dir, KIT_TRACK)
-    routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
+    sampler_mod.create(project_dir, DRUM_TRACK)  # sampler instrument hosted on the MIDI track
 
     # Fill the kit from the library (best-effort — empty kit if none available).
     base_pattern = preset["pattern"]
     used_notes = {note for _, note, _, _ in base_pattern}
-    filled = _fill_kit_from_library(project_dir, KIT_TRACK, used_notes, library=library, rng=rng)
+    filled = _fill_kit_from_library(project_dir, DRUM_TRACK, used_notes, library=library, rng=rng)
     mapping = filled[0] if filled else []
     silent_notes = filled[1] if filled else []
 
@@ -177,7 +174,7 @@ def new(
         "bars": bars,
         "seed": seed,
         "library": library,
-        "tracks": [DRUM_TRACK, KIT_TRACK],
+        "tracks": [DRUM_TRACK],
         "pattern_clip": PATTERN_CLIP,
         "kit": mapping,
         "kit_source": "library" if mapping else "empty",
@@ -188,7 +185,7 @@ def new(
     elif not mapping:
         # No library kit — tell the user how to add one before exporting.
         result["next_steps"] = [
-            f"mendell kit load {name} {KIT_TRACK} <folder-of-one-shot-samples>",
+            f"mendell kit load {name} {DRUM_TRACK} <folder-of-one-shot-samples>",
             f"mendell export {name}",
         ]
     else:
@@ -361,23 +358,21 @@ def make(
     eff_bpm = float(bpm) if bpm is not None else float(preset["bpm"])
     eff_key = key if key is not None else preset["key"]
 
-    # Scaffold: project + midi drum track routed into a sampler "kit" track.
+    # Scaffold: a midi drum track hosting a sampler "kit" instrument.
     project_dir = project_mod.create(parent, name, bpm=eff_bpm, key=eff_key, scale=preset["scale"], genre=style)
     tracks_mod.add(project_dir, DRUM_TRACK, "midi")
-    tracks_mod.add(project_dir, KIT_TRACK, "sampler")
-    sampler_mod.create(project_dir, KIT_TRACK)
-    routing_mod.set_route(project_dir, DRUM_TRACK, KIT_TRACK)
+    sampler_mod.create(project_dir, DRUM_TRACK)  # sampler instrument hosted on the MIDI track
 
     # Kit: an explicit one-shot folder wins; otherwise fill from the library.
     # A dedicated rng stream keeps the kit pick from disturbing the (separately
     # seeded) variation generator below, so existing seeded builds are stable.
     kit_info = None
     if kit:
-        kit_info = kit_mod.load_kit(project_dir, KIT_TRACK, kit)
+        kit_info = kit_mod.load_kit(project_dir, DRUM_TRACK, kit)
     else:
         used_notes = {note for _, note, _, _ in preset["pattern"]}
         kit_rng = random.Random(f"{seed}:{name}:kit" if seed is not None else f"{name}:{style}:kit")
-        filled = _fill_kit_from_library(project_dir, KIT_TRACK, used_notes, library=library, rng=kit_rng)
+        filled = _fill_kit_from_library(project_dir, DRUM_TRACK, used_notes, library=library, rng=kit_rng)
         if filled:
             kit_info = {
                 "source": "library",
@@ -424,7 +419,7 @@ def make(
         "style": style,
         "bpm": eff_bpm,
         "key": eff_key,
-        "tracks": [DRUM_TRACK, KIT_TRACK, *extra_tracks],
+        "tracks": [DRUM_TRACK, *extra_tracks],
         "variations": len(variant_clips),
         "sections": sections,
         "arrangement_bars": arrangement_bars,
