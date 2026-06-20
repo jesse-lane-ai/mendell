@@ -175,12 +175,8 @@ def random_loop(
             "Run `mendell library add` to register a sample library first."
         )
 
-    # Pick a unique clip name
-    existing_clips = _existing_clip_names(project_dir, track)
-    n = 1
-    while f"random-loop-{n}" in existing_clips:
-        n += 1
-    clip_name = f"random-loop-{n}"
+    # Pick a project-unique clip name
+    clip_name = _unique_clip_name(project_dir, "random-loop")
 
     _ensure_track(project_dir, track, "audio")
     clips_mod.import_clip(project_dir, track, clip_name, sample_path=loop_path)
@@ -270,11 +266,7 @@ def random_clip(
         style = "lofi"
 
     # Unique clip name
-    existing_clips = _existing_clip_names(project_dir, track)
-    n = 1
-    while f"random-clip-{n}" in existing_clips:
-        n += 1
-    clip_name = f"random-clip-{n}"
+    clip_name = _unique_clip_name(project_dir, "random-clip")
 
     _ensure_track(project_dir, track, "midi")
     result = midi_gen_mod.generate(project_dir, track, clip_name, style=style, bars=bars)
@@ -295,22 +287,12 @@ def _track_type(project_dir: Path, track: str) -> str:
     return tracks_mod.load(project_dir, track).get("track", {}).get("type", "")
 
 
-def _clip_name(entry: Any) -> str:
-    """A track's ``clips`` entries may be bare name strings or dicts — normalize."""
-    return entry if isinstance(entry, str) else entry.get("name", "")
-
-
-def _existing_clip_names(project_dir: Path, track: str) -> set[str]:
-    try:
-        return {_clip_name(c) for c in tracks_mod.load(project_dir, track).get("clips", [])}
-    except Exception:
-        return set()
-
-
-def _unique_clip_name(project_dir: Path, track: str, prefix: str) -> str:
-    existing = _existing_clip_names(project_dir, track)
+def _unique_clip_name(project_dir: Path, prefix: str) -> str:
+    """A clip name unique across the *whole project* (clip files live in a
+    single ``clips/`` namespace, not per-track), so blocks dropped on different
+    tracks don't collide on ``<prefix>-1``."""
     n = 1
-    while f"{prefix}-{n}" in existing:
+    while clips_mod.exists(project_dir, f"{prefix}-{n}"):
         n += 1
     return f"{prefix}-{n}"
 
@@ -348,7 +330,7 @@ def replace_clip(
     project_dir = Path(project_dir)
     bar = int(bar)
     ttype = _track_type(project_dir, track)
-    clip_name = name or _unique_clip_name(project_dir, track, "clip")
+    clip_name = name or _unique_clip_name(project_dir, "clip")
 
     if ttype == "audio":
         from . import library as library_mod

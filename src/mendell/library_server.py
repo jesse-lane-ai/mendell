@@ -1439,9 +1439,23 @@ async function randomFill(kind) {
   if (!_arrProjectPath) { alert("Pick a project first."); return; }
   const payload = { path: _arrProjectPath };
   let endpoint;
-  if (kind === "loop") { payload.track = "drums"; payload.bars = 8; endpoint = "/api/arrange/random-loop"; }
-  else if (kind === "kit") { endpoint = "/api/arrange/random-kit"; }
-  else { payload.track = "drums"; payload.style = "lofi"; payload.bars = 4; endpoint = "/api/arrange/random-clip"; }
+  const sel = (_arrSel && _arrSel.track) ? _arrSel : null;
+  if (kind === "kit") {
+    endpoint = "/api/arrange/random-kit";
+  } else {
+    // 'loop' -> audio track, 'clip' -> midi track. Use the selected track when
+    // its type matches; otherwise fall back to a type-specific default name so
+    // an audio 'loops' track and a midi 'drums' track never collide.
+    const want = (kind === "loop") ? "audio" : "midi";
+    if (sel && sel.type !== want) {
+      alert("'" + _arrSel.track + "' is a " + sel.type + " track. Random " + kind +
+            " needs a " + want + " track — select a " + want + " track, or deselect to use the default.");
+      return;
+    }
+    payload.track = sel ? sel.track : (kind === "loop" ? "loops" : "drums");
+    if (kind === "loop") { payload.bars = 8; endpoint = "/api/arrange/random-loop"; }
+    else { payload.style = "lofi"; payload.bars = 4; endpoint = "/api/arrange/random-clip"; }
+  }
   try {
     await api(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     await loadArrangeView();
