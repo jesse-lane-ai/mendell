@@ -397,6 +397,7 @@ class _Handler(BaseHTTPRequestHandler):
             return v or None
 
         bpm = one("bpm")
+        bpm_val = float(bpm) if bpm else None
         return library_mod.search(
             one("query"),
             library=one("library"),
@@ -404,7 +405,9 @@ class _Handler(BaseHTTPRequestHandler):
             category=one("category"),
             kind=one("kind"),
             instrument=one("instrument"),
-            bpm=float(bpm) if bpm else None,
+            # Treat 0 (and below) as "no bpm filter" — the UI's number input can
+            # emit "0", which would otherwise match nothing.
+            bpm=bpm_val if bpm_val and bpm_val > 0 else None,
         )
 
     def _serve_audio(self, q: dict):
@@ -810,7 +813,7 @@ async function search() {
   if (q) p.set("query", q);
   if (cat) p.set("category", cat);
   if (kind) p.set("kind", kind);
-  if (bpm) p.set("bpm", bpm);
+  if (bpm && Number(bpm) > 0) p.set("bpm", bpm);
   if (inst) p.set("instrument", inst);
   const data = await api("/api/search?" + p.toString());
   render(data.matches);
