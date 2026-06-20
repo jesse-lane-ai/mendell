@@ -322,6 +322,32 @@ class _Handler(BaseHTTPRequestHandler):
                     start_bar=int(payload.get("start_bar") or 1),
                 )
                 self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/randomize-clip":
+                data = arrange_view_mod.randomize_clip(
+                    Path(payload["path"]).expanduser(), payload["track"], int(payload["bar"]),
+                    library=payload.get("library") or None,
+                    seed=payload.get("seed") or None,
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/replace-clip":
+                data = arrange_view_mod.replace_clip(
+                    Path(payload["path"]).expanduser(), payload["track"], int(payload["bar"]),
+                    payload["source"],
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/remove-clip":
+                data = arrange_view_mod.remove_clip(
+                    Path(payload["path"]).expanduser(), payload["track"], int(payload["bar"]),
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/add-kit":
+                data = arrange_view_mod.add_kit_to_track(
+                    Path(payload["path"]).expanduser(), payload["track"],
+                    kit=payload.get("kit") or None,
+                    library=payload.get("library") or None,
+                    seed=payload.get("seed") or None,
+                )
+                self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/arrange/new-project":
                 data = self._beat_new_project(payload)
                 self._send_json({"ok": True, "data": data})
@@ -627,8 +653,15 @@ _PAGE = r"""<!DOCTYPE html>
 </section>
 
 <section id="arrangeView" style="display:none; padding:16px 20px; width:100%">
+  <div id="arrTransport" style="display:none;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#1d2026;border-radius:8px;flex-wrap:wrap">
+    <button class="primary" onclick="arrRenderPlay()">▶ Render &amp; play</button>
+    <button onclick="arrStop()">■ Stop</button>
+    <audio id="arrAudio" preload="none" style="height:32px;vertical-align:middle"></audio>
+    <span id="arrTransportStatus" class="muted" style="font-size:12px"></span>
+  </div>
   <div id="arrMeta" class="muted" style="margin-bottom:12px"></div>
   <div id="arrGrid" style="overflow-x:auto"></div>
+  <div id="arrSel" style="display:none;margin-top:14px"></div>
   <div id="arrEmpty" class="empty">Select a project above to view its arrangement.</div>
 </section>
 
@@ -1155,6 +1188,8 @@ async function doBeat() {
 loadBackends(); loadLibs(); search();
 // ---- Arrangement tab ----------------------------------------------------
 let _arrProjectPath = null;
+let _arrSnap = null;          // last loaded arrangement snapshot
+let _arrSel = null;           // {track, type, bar?, clip?}  current selection
 async function arrTabInit() {
   try {
     const { projects } = await api("/api/projects");
@@ -1174,17 +1209,22 @@ async function arrTabInit() {
 async function loadArrangeView() {
   const path = document.getElementById("arrProject").value;
   if (!path) {
-    _arrProjectPath = null;
+    _arrProjectPath = null; _arrSnap = null; _arrSel = null;
     document.getElementById("arrGrid").innerHTML = "";
     document.getElementById("arrMeta").textContent = "";
+    document.getElementById("arrTransport").style.display = "none";
+    document.getElementById("arrSel").style.display = "none";
     document.getElementById("arrEmpty").style.display = "";
     return;
   }
   _arrProjectPath = path;
   document.getElementById("arrEmpty").style.display = "none";
+  document.getElementById("arrTransport").style.display = "flex";
   try {
     const snap = await api("/api/arrange/view?path=" + encodeURIComponent(path));
+    _arrSnap = snap;
     renderArrangeGrid(snap);
+    renderArrSelection();
   } catch (e) {
     document.getElementById("arrGrid").innerHTML = '<p style="color:#ff6b6b">Error: ' + esc(e.message) + '</p>';
   }
@@ -1207,7 +1247,9 @@ function renderArrangeGrid(snap) {
         barMap[b] = { clip: p.clip, start: p.start_bar, len: p.length_bars };
     });
     const badge = ({midi:"M",audio:"A",sampler:"S"})[track.type] || "?";
-    html += '<div style="padding:4px 6px;background:#1d2026;border-radius:4px;display:flex;align-items:center;gap:4px;overflow:hidden">' +
+    const trkSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar == null) ? ";box-shadow:0 0 0 2px #fff inset" : "";
+    html += '<div onclick="selectTrack(' + ti + ')" title="select track" ' +
+      'style="cursor:pointer;padding:4px 6px;background:#1d2026;border-radius:4px;display:flex;align-items:center;gap:4px;overflow:hidden' + trkSel + '">' +
       '<span style="background:' + colour + ';color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(track.name) + '">' + esc(track.name) + '</span></div>';
     let b = 1;
@@ -1215,12 +1257,13 @@ function renderArrangeGrid(snap) {
       const cell = barMap[b];
       if (cell && b === cell.start) {
         const span = Math.min(cell.len, totalBars - b + 1);
-        html += '<div style="grid-column:span ' + span + ';background:' + colour +
-          ';border-radius:4px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#fff" title="' +
-          esc(cell.clip) + '">' + esc(cell.clip) + '</div>';
+        const clipSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === cell.start) ? ";box-shadow:0 0 0 2px #fff inset" : "";
+        html += '<div onclick="selectClip(' + ti + ',' + cell.start + ')" title="select clip" style="cursor:pointer;grid-column:span ' + span + ';background:' + colour +
+          ';border-radius:4px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#fff' + clipSel + '">' +
+          esc(cell.clip) + '</div>';
         b += span;
       } else {
-        html += '<div style="background:#1d2026;border-radius:4px"></div>';
+        html += '<div onclick="selectEmpty(' + ti + ',' + b + ')" title="empty — click track to fill" style="cursor:pointer;background:#1d2026;border-radius:4px"></div>';
         b++;
       }
     }
@@ -1228,6 +1271,151 @@ function renderArrangeGrid(snap) {
   if (!tracks.length) html += '<div style="grid-column:1/-1;color:#8b93a1;padding:20px;text-align:center">No tracks yet — use the random fill buttons.</div>';
   html += "</div>";
   document.getElementById("arrGrid").innerHTML = html;
+}
+
+// ---- selection -----------------------------------------------------------
+function _arrTrack(ti) { return (_arrSnap && _arrSnap.tracks) ? _arrSnap.tracks[ti] : null; }
+function selectTrack(ti) {
+  const t = _arrTrack(ti); if (!t) return;
+  _arrSel = { track: t.name, type: t.type, bar: null, clip: null };
+  renderArrangeGrid(_arrSnap); renderArrSelection();
+}
+function selectClip(ti, bar) {
+  const t = _arrTrack(ti); if (!t) return;
+  const p = (t.placements || []).find(x => x.start_bar === bar);
+  _arrSel = { track: t.name, type: t.type, bar, clip: p ? p.clip : null };
+  renderArrangeGrid(_arrSnap); renderArrSelection();
+}
+function selectEmpty(ti, bar) {
+  const t = _arrTrack(ti); if (!t) return;
+  _arrSel = { track: t.name, type: t.type, bar, clip: null };
+  renderArrangeGrid(_arrSnap); renderArrSelection();
+}
+
+function renderArrSelection() {
+  const el = document.getElementById("arrSel");
+  if (!_arrSel) { el.style.display = "none"; return; }
+  el.style.display = "";
+  const s = _arrSel;
+  let h = '<div class="card" style="max-width:560px">';
+  h += '<div style="font-weight:600;margin-bottom:8px">' +
+       (s.bar != null ? ('Clip @ bar ' + s.bar + (s.clip ? " · " + esc(s.clip) : " · (empty)")) : ('Track')) +
+       ' <span class="muted">— ' + esc(s.track) + ' (' + esc(s.type) + ')</span></div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">';
+  if (s.type === "midi" || s.type === "audio") {
+    const barArg = (s.bar != null ? s.bar : 1);
+    h += '<button class="primary" onclick="arrRandomizeSel(' + barArg + ')">🎲 Randomize ' + (s.clip ? 'clip' : 'into bar ' + barArg) + '</button>';
+  }
+  if (s.bar != null && s.clip) {
+    h += '<button onclick="arrRemoveSel()">✕ Remove clip</button>';
+  }
+  if (s.type === "midi") {
+    h += '<button onclick="arrAddKitSel()">🥁 Add kit</button>';
+  }
+  h += '</div>';
+  // Replace-with-source row
+  if (s.type === "audio") {
+    h += '<div style="display:flex;gap:6px"><input id="arrReplaceSrc" placeholder="library ref or /path/to/sample.wav" style="flex:1">' +
+         '<button onclick="arrReplaceSel()">Replace</button></div>';
+  } else if (s.type === "midi") {
+    h += '<div style="display:flex;gap:6px"><input id="arrReplaceSrc" placeholder="MIDI-catalog clip name" style="flex:1">' +
+         '<button onclick="arrReplaceSel()">Replace</button></div>';
+  }
+  // Add-kit controls
+  if (s.type === "midi") {
+    h += '<div id="arrKitRow" style="display:flex;gap:6px;margin-top:8px;align-items:center">' +
+         '<span class="muted" style="font-size:12px">Kit:</span>' +
+         '<select id="arrKitName"><option value="">random from library</option></select>' +
+         '<input id="arrKitLib" placeholder="library (optional)" style="width:140px"></div>';
+  }
+  h += '<div id="arrSelStatus" class="muted" style="font-size:12px;margin-top:8px"></div>';
+  h += '</div>';
+  el.innerHTML = h;
+  if (s.type === "midi") populateArrKits();
+}
+
+async function populateArrKits() {
+  try {
+    const { kits } = await api("/api/kits");
+    const sel = document.getElementById("arrKitName");
+    if (!sel) return;
+    sel.innerHTML = '<option value="">random from library</option>' +
+      (kits || []).map(k => '<option value="' + esc(k.name) + '">' + esc(k.name) + '</option>').join("");
+  } catch (e) {}
+}
+
+function _arrSelStatus(msg, err) {
+  const st = document.getElementById("arrSelStatus");
+  if (st) { st.style.color = err ? "#ff6b6b" : "#8b93a1"; st.textContent = msg; }
+}
+
+async function arrRandomizeSel(bar) {
+  if (!_arrSel) return;
+  _arrSelStatus("Randomizing…");
+  try {
+    await api("/api/arrange/randomize-clip", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: _arrSel.track, bar,
+        library: (document.getElementById("arrKitLib") || {}).value || null }) });
+    _arrSel.bar = bar;
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
+}
+
+async function arrReplaceSel() {
+  if (!_arrSel || _arrSel.bar == null) { _arrSelStatus("Select a clip/bar first.", true); return; }
+  const src = (document.getElementById("arrReplaceSrc") || {}).value.trim();
+  if (!src) { _arrSelStatus("Enter a source.", true); return; }
+  _arrSelStatus("Replacing…");
+  try {
+    await api("/api/arrange/replace-clip", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: _arrSel.track, bar: _arrSel.bar, source: src }) });
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
+}
+
+async function arrRemoveSel() {
+  if (!_arrSel || _arrSel.bar == null) return;
+  _arrSelStatus("Removing…");
+  try {
+    await api("/api/arrange/remove-clip", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: _arrSel.track, bar: _arrSel.bar }) });
+    _arrSel = { track: _arrSel.track, type: _arrSel.type, bar: null, clip: null };
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
+}
+
+async function arrAddKitSel() {
+  if (!_arrSel) return;
+  _arrSelStatus("Adding kit…");
+  try {
+    const data = await api("/api/arrange/add-kit", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: _arrSel.track,
+        kit: (document.getElementById("arrKitName") || {}).value || null,
+        library: (document.getElementById("arrKitLib") || {}).value || null }) });
+    await loadArrangeView();
+    _arrSelStatus("Mapped " + data.mapped + " sounds onto '" + data.sampler_track + "'.");
+  } catch (e) { _arrSelStatus(e.message, true); }
+}
+
+// ---- transport -----------------------------------------------------------
+async function arrRenderPlay() {
+  if (!_arrProjectPath) { alert("Pick a project first."); return; }
+  const st = document.getElementById("arrTransportStatus");
+  st.textContent = "Rendering…";
+  try {
+    await api("/api/projects/render", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, format: "wav" }) });
+    const au = document.getElementById("arrAudio");
+    au.src = "/api/projects/audio?path=" + encodeURIComponent(_arrProjectPath) + "&t=" + Date.now();
+    au.controls = true;
+    await au.play().catch(() => {});
+    st.textContent = "Playing rendered mix.";
+  } catch (e) { st.textContent = "Render failed: " + e.message; }
+}
+function arrStop() {
+  const au = document.getElementById("arrAudio");
+  au.pause(); au.currentTime = 0;
+  document.getElementById("arrTransportStatus").textContent = "Stopped.";
 }
 async function randomFill(kind) {
   if (!_arrProjectPath) { alert("Pick a project first."); return; }
