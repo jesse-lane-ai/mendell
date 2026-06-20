@@ -28,6 +28,7 @@ from . import config as config_mod
 from . import library as library_mod
 from . import midi_gen as midi_gen_mod
 from . import registry as registry_mod
+from .clips.name_classify import classify_from_names
 from .errors import MendellError
 from .recognize import list_backends
 
@@ -118,6 +119,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "data": self._do_search(query)})
             elif path == "/api/audio":
                 self._serve_audio(query)
+            elif path == "/api/classify/probe":
+                file_path_param = query.get("path", [None])[0]
+                if not file_path_param:
+                    raise MendellError("path is required", code=1)
+                self._send_json({"ok": True, "data": {
+                    "path": file_path_param,
+                    "name_classify": classify_from_names(file_path_param),
+                }})
             else:
                 self._send(404, b"not found", "text/plain")
         except Exception as err:  # noqa: BLE001
@@ -386,6 +395,9 @@ _PAGE = r"""<!DOCTYPE html>
   .muted { color: #8b93a1; }
   .count { color: #8b93a1; margin-left: auto; }
   .empty { color: #8b93a1; padding: 30px; text-align: center; }
+  .card { background: #1b1e24; border: 1px solid #333842; border-radius: 8px; padding: 14px; min-width: 220px; flex: 1; max-width: 320px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; }
+  .card input, .card select { margin-bottom: 8px; }
   dialog { background: #1b1e24; color: #e6e8eb; border: 1px solid #333842; border-radius: 10px; padding: 20px; width: 360px; }
   dialog h3 { margin: 0 0 12px; }
   dialog label { display: block; margin: 10px 0 4px; color: #aab3c2; }
@@ -399,6 +411,7 @@ _PAGE = r"""<!DOCTYPE html>
   <nav class="tabs">
     <button id="tab-library" class="tab active" onclick="showTab('library')">Library</button>
     <button id="tab-projects" class="tab" onclick="showTab('projects')">Projects</button>
+    <button id="tab-classify" class="tab" onclick="showTab('classify')">Classify</button>
   </nav>
   <span id="libActions">
     <button onclick="rescan()">Re-scan all</button>
@@ -408,6 +421,7 @@ _PAGE = r"""<!DOCTYPE html>
     <button onclick="loadProjects()">Refresh</button>
     <button class="primary" onclick="openBeatDlg()">+ New beat</button>
   </span>
+  <span id="classifyActions" style="display:none"></span>
 </header>
 <main id="libraryView">
   <aside>
@@ -430,6 +444,18 @@ _PAGE = r"""<!DOCTYPE html>
 
 <section id="projectsView" style="display:none">
   <div id="projects"></div>
+</section>
+
+<section id="classifyView" style="display:none; padding:16px 20px; width:100%">
+  <div class="card" style="max-width:560px">
+    <h3>Classify a sample path</h3>
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Derives kind / category / key / bpm from the filename and parent-folder names.</p>
+    <div style="display:flex;gap:8px">
+      <input id="cpInput" placeholder="/path/to/sample.wav" style="flex:1" onkeydown="if(event.key==='Enter')classifyProbe()">
+      <button class="primary" onclick="classifyProbe()">Probe</button>
+    </div>
+    <pre id="cpResult" style="background:#181a1f;border-radius:4px;padding:.8rem;margin:12px 0 0;min-height:3rem;white-space:pre-wrap"></pre>
+  </div>
 </section>
 
 <dialog id="addDlg">
@@ -647,15 +673,27 @@ async function doAdd() {
 
 // ---- Projects tab -------------------------------------------------------
 let projectsLoaded = false;
+// Tab registry — each entry maps a tab to its view + action-bar elements and an
+// optional onShow hook. New feature tabs extend this object.
+const TABS = {
+  library:  { view: "libraryView",  actions: "libActions",      disp: "grid" },
+  projects: { view: "projectsView", actions: "projActions",     disp: "block",
+              onShow: () => { if (!projectsLoaded) loadProjects(); } },
+  classify: { view: "classifyView", actions: "classifyActions", disp: "block" },
+};
 function showTab(name) {
-  const isLib = name === "library";
-  document.getElementById("libraryView").style.display = isLib ? "grid" : "none";
-  document.getElementById("projectsView").style.display = isLib ? "none" : "block";
-  document.getElementById("libActions").style.display = isLib ? "" : "none";
-  document.getElementById("projActions").style.display = isLib ? "none" : "";
-  document.getElementById("tab-library").classList.toggle("active", isLib);
-  document.getElementById("tab-projects").classList.toggle("active", !isLib);
-  if (!isLib && !projectsLoaded) loadProjects();
+  for (const [key, t] of Object.entries(TABS)) {
+    document.getElementById(t.view).style.display = "none";
+    const a = document.getElementById(t.actions);
+    if (a) a.style.display = "none";
+    const btn = document.getElementById("tab-" + key);
+    if (btn) btn.classList.toggle("active", key === name);
+  }
+  const t = TABS[name] || TABS.library;
+  document.getElementById(t.view).style.display = t.disp;
+  const a = document.getElementById(t.actions);
+  if (a) a.style.display = "";
+  if (t.onShow) t.onShow();
 }
 
 function fmtDate(ts) {
@@ -795,6 +833,26 @@ async function doBeat() {
 }
 
 loadBackends(); loadLibs(); search();
+// ---- Classify tab -------------------------------------------------------
+async function classifyProbe() {
+  const p = document.getElementById("cpInput").value.trim();
+  const out = document.getElementById("cpResult");
+  if (!p) { out.textContent = "← enter a file path"; return; }
+  out.textContent = "probing…";
+  try {
+    const data = await api("/api/classify/probe?path=" + encodeURIComponent(p));
+    const nc = data.name_classify;
+    out.textContent = [
+      "kind:        " + (nc.kind || "—"),
+      "category:    " + (nc.category || "—"),
+      "key:         " + (nc.key || "—") + "   scale: " + (nc.scale || "—"),
+      "bpm:         " + (nc.bpm || "—"),
+      "instruments: " + ((nc.instruments || []).join(", ") || "—"),
+      "confidence:  " + (nc.confidence != null ? Number(nc.confidence).toFixed(3) : "—"),
+      "source:      " + (nc.source || "—"),
+    ].join("\n");
+  } catch (e) { out.textContent = "Error: " + e.message; }
+}
 </script>
 </body>
 </html>

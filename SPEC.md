@@ -575,10 +575,24 @@ straight to `kit load` / `sampler map add` / `clip import`.
 ] } }
 ```
 
+During indexing, classification reads **both the filename and every parent-folder
+name** before falling back to a content recognizer: a path like
+`.../House Loops/Cm 124bpm/bassline.wav` yields `kind=loop`, `key=C`, `scale=minor`,
+`bpm=124`, `category=bass` from names alone. Names are parsed first and per-field —
+only the fields still unresolved trigger the configured recognizer (e.g. the ACE-Step
+captioner), so a confident filename/folder answer is never re-derived. You can probe
+this name-based classifier directly on any path, without registering anything:
+
+```bash
+# Derive {kind, category, key, scale, bpm, instruments, confidence, source} from a
+# path's filename + parent folders. --with-acestep also reports whether the
+# inconclusive-field fallback would invoke the ACE-Step captioner.
+mendell classify probe <path> [--with-acestep] [--json]
+```
+
 Out of scope for v1: copying/syncing library contents into projects (samples are still
 copied into `<project>/samples/` on use, exactly as they are today — the library only
-stores *references*), audio analysis/tagging beyond filename heuristics, and remote/cloud
-folders (local paths only).
+stores *references*), and remote/cloud folders (local paths only).
 
 ### Project Registry
 

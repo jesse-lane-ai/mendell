@@ -341,13 +341,30 @@ def _index_folder(
 
     # Filename-only pass first — cheap, always runs, and gives the recognizer
     # the `kind` it needs to pick the right label vocabulary.
+    # name_classify runs first to extract folder-path context (key/scale/bpm
+    # from parent dirs); its fields backfill whatever the simpler heuristics miss.
+    from .clips.name_classify import classify_from_names as _classify_from_names
+
     base: list[dict[str, Any]] = []
     caches: dict[str, audio_analysis._AnalysisCache] = {}
     for file_path in files:
+        name_info = _classify_from_names(file_path)
         category, category_source = _guess_category_with_source(file_path)
+        # Upgrade category from name_classify when the simpler heuristic fell back.
+        if category_source == "fallback" and name_info["category"] is not None:
+            category = name_info["category"]
+            category_source = "name"
         bpm, bpm_source = _detect_bpm(file_path, category, analyze=analyze)
+        # Fill in BPM from folder-path parsing when filename alone didn't find it.
+        if bpm is None and name_info["bpm"] is not None:
+            bpm = name_info["bpm"]
+            bpm_source = "name"
         duration = audio_analysis.probe_duration_seconds(str(file_path))
         kind, kind_source = _detect_kind(file_path, category, bpm, duration)
+        # Fill in kind from folder-path parsing when heuristic is uncertain.
+        if kind == "unknown" and name_info["kind"] is not None:
+            kind = name_info["kind"]
+            kind_source = "name"
         try:
             mtime = file_path.stat().st_mtime
         except OSError:
@@ -362,6 +379,11 @@ def _index_folder(
             "kind": kind,
             "kind_source": kind_source,
             "mtime": mtime,
+            # Store name-derived key/scale for downstream use (not yet in DB
+            # schema, but attached here so _index_folder callers can access it).
+            "name_key": name_info["key"],
+            "name_scale": name_info["scale"],
+            "name_confidence": name_info["confidence"],
         })
 
     recognitions: list[Recognition | None] = [None] * len(files)

@@ -7,6 +7,7 @@ from . import ace as ace_cli
 from . import arrangement as arrangement_cli
 from . import automation as automation_cli
 from . import beat as beat_cli
+from . import classify as classify_cli
 from . import clips as clips_cli
 from . import config as config_cli
 from . import engine as engine_cli
@@ -48,6 +49,7 @@ cli.add_command(library_cli.library)
 cli.add_command(registry_cli.projects)
 cli.add_command(beat_cli.beat)
 cli.add_command(midi_cli.midi)
+cli.add_command(classify_cli.classify)
 cli.add_command(ace_cli.ace)
 
 
