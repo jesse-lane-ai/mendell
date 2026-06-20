@@ -1229,18 +1229,23 @@ async function loadArrangeView() {
     document.getElementById("arrGrid").innerHTML = '<p style="color:#ff6b6b">Error: ' + esc(e.message) + '</p>';
   }
 }
+// Block sequencer: rows = tracks, columns = bar slots. Each square pad is a clip
+// block — filled pads carry a clip (audio/midi), empty pads are click-to-add.
+const ARR_COLOURS = ["#3b5bdb","#2f9e44","#c2410c","#7c3aed","#0e7490","#b45309"];
+const ARR_PAD = 36;
 function renderArrangeGrid(snap) {
   document.getElementById("arrMeta").textContent =
-    snap.bpm + " BPM · " + snap.time_sig + " · " + snap.total_bars + " bars";
+    snap.bpm + " BPM · " + snap.time_sig + " · " + snap.total_bars +
+    " bars · click an empty pad to drop a clip block, a block to select it";
   const totalBars = snap.total_bars || 32;
   const tracks = snap.tracks || [];
-  const COLOURS = ["#3b5bdb","#2f9e44","#c2410c","#7c3aed","#0e7490","#b45309"];
-  let html = '<div style="display:grid;grid-template-columns:120px repeat(' + totalBars +
-    ',minmax(24px,1fr));gap:2px;font-size:11px;min-width:' + (120 + totalBars * 26) + 'px">';
+  let html = '<div style="display:grid;grid-template-columns:140px repeat(' + totalBars +
+    ',' + ARR_PAD + 'px);gap:3px;font-size:10px;align-items:center;min-width:' + (140 + totalBars * (ARR_PAD + 3)) + 'px">';
   html += '<div class="muted" style="padding:4px 6px">Track</div>';
-  for (let b = 1; b <= totalBars; b++) html += '<div class="muted" style="text-align:center;padding:2px 0">' + b + '</div>';
+  for (let b = 1; b <= totalBars; b++)
+    html += '<div class="muted" style="text-align:center">' + b + '</div>';
   tracks.forEach((track, ti) => {
-    const colour = COLOURS[ti % COLOURS.length];
+    const colour = ARR_COLOURS[ti % ARR_COLOURS.length];
     const barMap = {};
     (track.placements || []).forEach(p => {
       for (let b = p.start_bar; b < p.start_bar + p.length_bars && b <= totalBars; b++)
@@ -1249,28 +1254,46 @@ function renderArrangeGrid(snap) {
     const badge = ({midi:"M",audio:"A",sampler:"S"})[track.type] || "?";
     const trkSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar == null) ? ";box-shadow:0 0 0 2px #fff inset" : "";
     html += '<div onclick="selectTrack(' + ti + ')" title="select track" ' +
-      'style="cursor:pointer;padding:4px 6px;background:#1d2026;border-radius:4px;display:flex;align-items:center;gap:4px;overflow:hidden' + trkSel + '">' +
+      'style="cursor:pointer;height:' + ARR_PAD + 'px;padding:0 6px;background:#1d2026;border-radius:5px;display:flex;align-items:center;gap:5px;overflow:hidden' + trkSel + '">' +
       '<span style="background:' + colour + ';color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
-      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(track.name) + '">' + esc(track.name) + '</span></div>';
-    let b = 1;
-    while (b <= totalBars) {
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="' + esc(track.name) + '">' + esc(track.name) + '</span></div>';
+    for (let b = 1; b <= totalBars; b++) {
       const cell = barMap[b];
-      if (cell && b === cell.start) {
-        const span = Math.min(cell.len, totalBars - b + 1);
-        const clipSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === cell.start) ? ";box-shadow:0 0 0 2px #fff inset" : "";
-        html += '<div onclick="selectClip(' + ti + ',' + cell.start + ')" title="select clip" style="cursor:pointer;grid-column:span ' + span + ';background:' + colour +
-          ';border-radius:4px;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#fff' + clipSel + '">' +
-          esc(cell.clip) + '</div>';
-        b += span;
+      if (cell) {
+        const isStart = (b === cell.start);
+        const isEnd = (b === cell.start + cell.len - 1) || (b === totalBars);
+        const lr = isStart ? "6px" : "0", rr = isEnd ? "6px" : "0";
+        const sel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === cell.start) ? ";box-shadow:0 0 0 2px #fff inset" : "";
+        html += '<div onclick="selectClip(' + ti + ',' + cell.start + ')" title="' + esc(cell.clip) + '" ' +
+          'style="cursor:pointer;height:' + ARR_PAD + 'px;background:' + colour + ';border-radius:' + lr + ' ' + rr + ' ' + rr + ' ' + lr +
+          ';display:flex;align-items:center;justify-content:center;color:#fff;overflow:hidden' + sel + '">' +
+          (isStart ? '<span style="font-size:9px;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            esc(cell.clip) + (cell.len > 1 ? ' &times;' + cell.len : '') + '</span>' : '') +
+          '</div>';
       } else {
-        html += '<div onclick="selectEmpty(' + ti + ',' + b + ')" title="empty — click track to fill" style="cursor:pointer;background:#1d2026;border-radius:4px"></div>';
-        b++;
+        html += '<div onclick="arrFillBlock(' + ti + ',' + b + ')" title="add a clip block at bar ' + b + '" ' +
+          'style="cursor:pointer;height:' + ARR_PAD + 'px;background:#15171b;border:1px solid #2a2e35;border-radius:6px"' +
+          ' onmouseover="this.style.background=\'#222733\'" onmouseout="this.style.background=\'#15171b\'"></div>';
       }
     }
   });
-  if (!tracks.length) html += '<div style="grid-column:1/-1;color:#8b93a1;padding:20px;text-align:center">No tracks yet — use the random fill buttons.</div>';
+  if (!tracks.length) html += '<div style="grid-column:1/-1;color:#8b93a1;padding:20px;text-align:center">No tracks yet — use the random fill buttons in the toolbar.</div>';
   html += "</div>";
   document.getElementById("arrGrid").innerHTML = html;
+}
+
+// Click an empty pad → drop a clip block (random clip of the track's type).
+async function arrFillBlock(ti, bar) {
+  const t = _arrTrack(ti); if (!t) return;
+  if (t.type !== "midi" && t.type !== "audio") { selectTrack(ti); return; }
+  _arrSel = { track: t.name, type: t.type, bar, clip: null };
+  renderArrSelection();
+  _arrSelStatus("Adding block…");
+  try {
+    await api("/api/arrange/randomize-clip", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: t.name, bar }) });
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
 }
 
 // ---- selection -----------------------------------------------------------
@@ -1284,11 +1307,6 @@ function selectClip(ti, bar) {
   const t = _arrTrack(ti); if (!t) return;
   const p = (t.placements || []).find(x => x.start_bar === bar);
   _arrSel = { track: t.name, type: t.type, bar, clip: p ? p.clip : null };
-  renderArrangeGrid(_arrSnap); renderArrSelection();
-}
-function selectEmpty(ti, bar) {
-  const t = _arrTrack(ti); if (!t) return;
-  _arrSel = { track: t.name, type: t.type, bar, clip: null };
   renderArrangeGrid(_arrSnap); renderArrSelection();
 }
 

@@ -176,12 +176,7 @@ def random_loop(
         )
 
     # Pick a unique clip name
-    existing_clips = set()
-    try:
-        track_data = tracks_mod.load(project_dir, track)
-        existing_clips = {c.get("name", "") for c in track_data.get("clips", [])}
-    except Exception:
-        pass
+    existing_clips = _existing_clip_names(project_dir, track)
     n = 1
     while f"random-loop-{n}" in existing_clips:
         n += 1
@@ -275,12 +270,7 @@ def random_clip(
         style = "lofi"
 
     # Unique clip name
-    existing_clips: set[str] = set()
-    try:
-        track_data = tracks_mod.load(project_dir, track)
-        existing_clips = {c.get("name", "") for c in track_data.get("clips", [])}
-    except Exception:
-        pass
+    existing_clips = _existing_clip_names(project_dir, track)
     n = 1
     while f"random-clip-{n}" in existing_clips:
         n += 1
@@ -305,12 +295,20 @@ def _track_type(project_dir: Path, track: str) -> str:
     return tracks_mod.load(project_dir, track).get("track", {}).get("type", "")
 
 
-def _unique_clip_name(project_dir: Path, track: str, prefix: str) -> str:
-    existing: set[str] = set()
+def _clip_name(entry: Any) -> str:
+    """A track's ``clips`` entries may be bare name strings or dicts — normalize."""
+    return entry if isinstance(entry, str) else entry.get("name", "")
+
+
+def _existing_clip_names(project_dir: Path, track: str) -> set[str]:
     try:
-        existing = {c.get("name", "") for c in tracks_mod.load(project_dir, track).get("clips", [])}
+        return {_clip_name(c) for c in tracks_mod.load(project_dir, track).get("clips", [])}
     except Exception:
-        pass
+        return set()
+
+
+def _unique_clip_name(project_dir: Path, track: str, prefix: str) -> str:
+    existing = _existing_clip_names(project_dir, track)
     n = 1
     while f"{prefix}-{n}" in existing:
         n += 1
