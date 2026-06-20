@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlparse
 from . import beat as beat_mod
 from . import beat_random32
 from . import config as config_mod
+from . import kits as kits_mod
 from . import library as library_mod
 from . import midi_gen as midi_gen_mod
 from . import registry as registry_mod
@@ -119,6 +120,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "data": self._do_search(query)})
             elif path == "/api/audio":
                 self._serve_audio(query)
+            elif path == "/api/kits":
+                self._send_json({"ok": True, "data": kits_mod.list_kits()})
+            elif path == "/api/kits/show":
+                name = query.get("name", [None])[0]
+                if not name:
+                    raise MendellError("name is required", code=1)
+                self._send_json({"ok": True, "data": kits_mod.show(name)})
             elif path == "/api/classify/probe":
                 file_path_param = query.get("path", [None])[0]
                 if not file_path_param:
@@ -198,6 +206,31 @@ class _Handler(BaseHTTPRequestHandler):
                             get_captioner().unload()
                         except Exception:
                             pass
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/create":
+                data = kits_mod.create(payload["name"], description=payload.get("description") or "")
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/add":
+                data = kits_mod.add_slot(
+                    payload["kit"], payload["note_or_category"], payload["path"],
+                    slot_name=payload.get("slot_name") or "",
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/quick":
+                seed = payload.get("seed")
+                data = kits_mod.quick_kit(
+                    payload["name"],
+                    library=payload.get("library") or None,
+                    seed=int(seed) if seed not in (None, "") else None,
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/apply":
+                data = kits_mod.apply_to_project(
+                    payload["kit"], Path(payload["project"]).expanduser(), payload["track"],
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/remove":
+                data = kits_mod.remove(payload["name"])
                 self._send_json({"ok": True, "data": data})
             else:
                 self._send(404, b"not found", "text/plain")
@@ -398,6 +431,8 @@ _PAGE = r"""<!DOCTYPE html>
   .card { background: #1b1e24; border: 1px solid #333842; border-radius: 8px; padding: 14px; min-width: 220px; flex: 1; max-width: 320px; }
   .card h3 { margin: 0 0 10px; font-size: 14px; }
   .card input, .card select { margin-bottom: 8px; }
+  #kitList .kit-row { background: #1b1e24; border: 1px solid #333842; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  #kitList .kit-row:hover { background: #21252d; }
   dialog { background: #1b1e24; color: #e6e8eb; border: 1px solid #333842; border-radius: 10px; padding: 20px; width: 360px; }
   dialog h3 { margin: 0 0 12px; }
   dialog label { display: block; margin: 10px 0 4px; color: #aab3c2; }
@@ -411,6 +446,7 @@ _PAGE = r"""<!DOCTYPE html>
   <nav class="tabs">
     <button id="tab-library" class="tab active" onclick="showTab('library')">Library</button>
     <button id="tab-projects" class="tab" onclick="showTab('projects')">Projects</button>
+    <button id="tab-kits" class="tab" onclick="showTab('kits')">Kits</button>
     <button id="tab-classify" class="tab" onclick="showTab('classify')">Classify</button>
   </nav>
   <span id="libActions">
@@ -420,6 +456,9 @@ _PAGE = r"""<!DOCTYPE html>
   <span id="projActions" style="display:none">
     <button onclick="loadProjects()">Refresh</button>
     <button class="primary" onclick="openBeatDlg()">+ New beat</button>
+  </span>
+  <span id="kitsActions" style="display:none">
+    <button onclick="loadKits()">Refresh</button>
   </span>
   <span id="classifyActions" style="display:none"></span>
 </header>
@@ -444,6 +483,40 @@ _PAGE = r"""<!DOCTYPE html>
 
 <section id="projectsView" style="display:none">
   <div id="projects"></div>
+</section>
+
+<section id="kitsView" style="display:none; padding:16px 20px; width:100%">
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+    <div class="card">
+      <h3>Create kit</h3>
+      <input id="kitCreateName" placeholder="kit name">
+      <input id="kitCreateDesc" placeholder="description (optional)">
+      <button class="primary" onclick="kitCreate()">Create</button>
+    </div>
+    <div class="card">
+      <h3>Quick kit</h3>
+      <input id="kitQuickName" placeholder="kit name">
+      <input id="kitQuickLib" placeholder="library (optional)">
+      <input id="kitQuickSeed" type="number" placeholder="seed (optional)">
+      <button class="primary" onclick="kitQuick()">Quick kit (random one-shots)</button>
+    </div>
+  </div>
+  <div id="kitStatus" class="muted" style="margin-bottom:8px"></div>
+  <div id="kitList"></div>
+  <div id="kitDetail" style="display:none;margin-top:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span id="kitDetailTitle" style="font-weight:600"></span>
+      <button onclick="document.getElementById('kitDetail').style.display='none'" style="margin-left:auto">Close</button>
+    </div>
+    <div id="kitDetailSlots" style="overflow-x:auto"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <input id="kitApplyProject" placeholder="/path/to/project" style="min-width:260px">
+      <input id="kitApplyTrack" placeholder="track" value="drums" style="width:120px">
+      <button class="primary" onclick="kitApply()">Apply to project</button>
+      <button onclick="kitRemove()">Delete kit</button>
+    </div>
+    <div id="kitApplyStatus" class="muted" style="margin-top:8px"></div>
+  </div>
 </section>
 
 <section id="classifyView" style="display:none; padding:16px 20px; width:100%">
@@ -679,6 +752,8 @@ const TABS = {
   library:  { view: "libraryView",  actions: "libActions",      disp: "grid" },
   projects: { view: "projectsView", actions: "projActions",     disp: "block",
               onShow: () => { if (!projectsLoaded) loadProjects(); } },
+  kits:     { view: "kitsView",     actions: "kitsActions",     disp: "block",
+              onShow: () => loadKits() },
   classify: { view: "classifyView", actions: "classifyActions", disp: "block" },
 };
 function showTab(name) {
@@ -833,6 +908,85 @@ async function doBeat() {
 }
 
 loadBackends(); loadLibs(); search();
+// ---- Kits tab -----------------------------------------------------------
+let _selectedKit = null;
+async function loadKits() {
+  const el = document.getElementById("kitList");
+  try {
+    const { kits } = await api("/api/kits");
+    document.getElementById("kitStatus").textContent = kits.length + " kit" + (kits.length === 1 ? "" : "s");
+    if (!kits.length) { el.innerHTML = '<div class="empty">No kits yet — use Create or Quick kit above.</div>'; return; }
+    el.innerHTML = kits.map(k =>
+      '<div class="kit-row" onclick="showKit(\'' + encodeURIComponent(k.name) + '\')">' +
+      '<span style="font-weight:600">' + esc(k.name) + '</span>' +
+      '<span class="muted">' + esc(k.description || "") + '</span></div>').join("");
+  } catch (e) { document.getElementById("kitStatus").textContent = e.message; }
+}
+async function showKit(nameEnc) {
+  const name = decodeURIComponent(nameEnc);
+  _selectedKit = name;
+  try {
+    const kit = await api("/api/kits/show?name=" + encodeURIComponent(name));
+    document.getElementById("kitDetailTitle").textContent = kit.name + " (" + kit.slot_count + " slot" + (kit.slot_count === 1 ? "" : "s") + ")";
+    const rows = (kit.slots || []).map(s =>
+      '<tr><td style="padding:4px 10px 4px 0;color:#5b8cff">' + s.gm_note + '</td><td style="padding:4px 10px 4px 0">' +
+      esc(s.note_name || "") + '</td><td style="padding:4px 10px 4px 0" class="muted">' + esc(s.category || "") +
+      '</td><td style="padding:4px 0;word-break:break-all">' + esc(s.source_path || "") + '</td></tr>').join("");
+    document.getElementById("kitDetailSlots").innerHTML =
+      '<table style="border-collapse:collapse;width:100%;font-size:13px"><thead><tr class="muted" style="text-align:left">' +
+      '<th style="padding:0 10px 4px 0">Note#</th><th style="padding:0 10px 4px 0">Name</th><th style="padding:0 10px 4px 0">Category</th><th>File</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById("kitDetail").style.display = "";
+    document.getElementById("kitApplyStatus").textContent = "";
+  } catch (e) { alert(e.message); }
+}
+async function kitCreate() {
+  const name = document.getElementById("kitCreateName").value.trim();
+  if (!name) { alert("Kit name required"); return; }
+  try {
+    const data = await api("/api/kits/create", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: document.getElementById("kitCreateDesc").value.trim() }) });
+    document.getElementById("kitCreateName").value = "";
+    document.getElementById("kitCreateDesc").value = "";
+    await loadKits(); showKit(encodeURIComponent(data.name));
+  } catch (e) { alert(e.message); }
+}
+async function kitQuick() {
+  const name = document.getElementById("kitQuickName").value.trim();
+  if (!name) { alert("Kit name required"); return; }
+  document.getElementById("kitStatus").textContent = "Building quick kit…";
+  try {
+    const data = await api("/api/kits/quick", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, library: document.getElementById("kitQuickLib").value.trim() || null,
+        seed: document.getElementById("kitQuickSeed").value || null }) });
+    document.getElementById("kitQuickName").value = "";
+    await loadKits(); showKit(encodeURIComponent(data.name));
+  } catch (e) { alert(e.message); loadKits(); }
+}
+async function kitApply() {
+  if (!_selectedKit) return;
+  const project = document.getElementById("kitApplyProject").value.trim();
+  const track = document.getElementById("kitApplyTrack").value.trim() || "drums";
+  if (!project) { alert("Project path required"); return; }
+  const el = document.getElementById("kitApplyStatus");
+  el.textContent = "Applying…";
+  try {
+    const data = await api("/api/kits/apply", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kit: _selectedKit, project, track }) });
+    el.style.color = "#2f9e44";
+    el.textContent = "Mapped " + data.count + " slot" + (data.count === 1 ? "" : "s") + " onto '" + data.track + "'.";
+  } catch (e) { el.style.color = "#ff6b6b"; el.textContent = e.message; }
+}
+async function kitRemove() {
+  if (!_selectedKit || !confirm("Delete kit '" + _selectedKit + "'?")) return;
+  try {
+    await api("/api/kits/remove", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: _selectedKit }) });
+    _selectedKit = null;
+    document.getElementById("kitDetail").style.display = "none";
+    loadKits();
+  } catch (e) { alert(e.message); }
+}
+
 // ---- Classify tab -------------------------------------------------------
 async function classifyProbe() {
   const p = document.getElementById("cpInput").value.trim();

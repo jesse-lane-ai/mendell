@@ -637,6 +637,43 @@ registry-only metadata; it is **not** written into `project.toml`.
 Recording is best-effort: if the registry write ever fails, project creation still
 succeeds (project.toml is already on disk) — the registry never blocks core work.
 
+### Drum Kits (global)
+
+A named, reusable collection of drum one-shots mapped to General MIDI percussion
+notes — the saved, cross-project counterpart to `kit load`. Kits live in the shared
+`library.db` (`kits` + `kit_slots` tables; same DB as the sample library and project
+registry, overridable via `MENDELL_LIBRARY_CONFIG`), so a kit assembled once can be
+applied to any project. Slots use the same drum vocabulary (`kick/snare/hat/clap/tom/
+crash/rim/perc/...`) and GM notes as `kit load`, `beat new`, and `midi generate`, so
+kits compose with all of them. All writes are idempotent (create-or-update).
+
+```bash
+# Create (or update) an empty named kit
+mendell kits create <name> [--description <text>] [--json]
+
+# Add (or replace) one slot. <note-or-category> accepts a GM note number,
+# a drum category keyword (kick/snare/...), or a note name (C3). <path> is a
+# sample file or a "<library>/<relative-path>" library ref (resolved like
+# sampler map add / clip import).
+mendell kits add <kit> <note-or-category> <path> [--name <slot-name>] [--json]
+
+# Assemble a kit automatically — picks one random one-shot per core drum role
+# from the sample library. --library scopes the search to one registered folder;
+# --seed makes the picks reproducible.
+mendell kits quick <name> [--library <name>] [--seed <int>] [--json]
+
+# List / inspect
+mendell kits list [--json]
+mendell kits show <name> [--json]
+
+# Map every slot onto a project (creates/reuses the sampler track) — idempotent,
+# same output shape as `kit load`
+mendell kits apply <kit> <project> <track> [--json]
+
+# Drop a kit (sample files on disk are untouched)
+mendell kits remove <name> [--json]
+```
+
 ### Tracks
 
 ```bash
