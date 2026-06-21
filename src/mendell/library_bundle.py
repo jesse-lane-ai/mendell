@@ -566,3 +566,91 @@ def _remap_slot_path(
         except ValueError:
             continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# full-DB backup / restore
+# ---------------------------------------------------------------------------
+#
+# A bundle copies the actual audio files and is portable to a machine that
+# doesn't have the originals. A DB backup is the opposite trade-off: a single
+# small ``.db`` snapshot of the *entire* shared catalog (libraries, indexed
+# files, kits, projects, MIDI, recognition cache) with no audio copied. It's
+# the fastest way to back up or move the catalog between machines that share the
+# same sample paths. Built on SQLite's online-backup API so the snapshot is
+# consistent even with WAL writers in flight.
+
+def export_db(out_path: str | Path) -> dict[str, Any]:
+    """Write a consistent snapshot of the whole library DB to ``out_path``."""
+    from . import library as library_mod
+
+    out = Path(out_path).expanduser()
+    if out.suffix.lower() != ".db":
+        out = out.with_suffix(".db")
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    src_path = library_mod.db_path()
+    if not src_path.exists():
+        raise FileNotFoundError(
+            f"no library DB to back up at {src_path} — add a folder first"
+        )
+
+    src = sqlite3.connect(src_path)
+    try:
+        dst = sqlite3.connect(out)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+    return {
+        "format": "db",
+        "path": str(out),
+        "bytes": out.stat().st_size,
+    }
+
+
+def import_db(src_path: str | Path, *, overwrite: bool = False) -> dict[str, Any]:
+    """Restore a DB snapshot created by :func:`export_db`, replacing the live
+    catalog. Refuses to clobber an existing non-empty DB unless ``overwrite``."""
+    from . import library as library_mod
+
+    src = Path(src_path).expanduser()
+    if not src.is_file():
+        raise FileNotFoundError(f"DB backup not found: {src}")
+    # Validate it's a usable SQLite DB carrying our schema before touching live data.
+    probe = sqlite3.connect(src)
+    try:
+        if not _table_exists(probe, "libraries"):
+            raise ValueError(f"'{src}' is not a Mendell library DB (no 'libraries' table)")
+    finally:
+        probe.close()
+
+    dest = library_mod.db_path()
+    if dest.exists() and dest.stat().st_size > 0 and not overwrite:
+        raise ValueError(
+            f"a library DB already exists at {dest} — pass overwrite to replace it"
+        )
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Restore via the backup API into the canonical location, then drop any stale
+    # WAL/SHM siblings so the restored snapshot is what subsequent reads see.
+    srccon = sqlite3.connect(src)
+    try:
+        dstcon = sqlite3.connect(dest)
+        try:
+            srccon.backup(dstcon)
+        finally:
+            dstcon.close()
+    finally:
+        srccon.close()
+    for suffix in ("-wal", "-shm"):
+        sibling = dest.with_name(dest.name + suffix)
+        if sibling.exists():
+            sibling.unlink()
+
+    with _read_db() as con:
+        libs = con.execute("SELECT COUNT(*) AS n FROM libraries").fetchone()["n"]
+    return {"format": "db", "path": str(dest), "libraries": libs}

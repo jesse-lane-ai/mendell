@@ -177,6 +177,25 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/remove":
                 data = library_mod.remove(payload["name"])
                 self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/library/export":
+                from . import library_bundle as bundle_mod
+                out = payload["out"]
+                if payload.get("mode") == "db":
+                    data = bundle_mod.export_db(out)
+                else:
+                    inc = payload.get("include") or None
+                    data = bundle_mod.export_bundle(out, include=inc)
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/library/import":
+                from . import library_bundle as bundle_mod
+                src = payload["src"]
+                overwrite = bool(payload.get("overwrite"))
+                if payload.get("mode") == "db":
+                    data = bundle_mod.import_db(src, overwrite=overwrite)
+                else:
+                    dest = payload.get("dest") or str(Path(src).expanduser().parent / Path(src).stem)
+                    data = bundle_mod.import_bundle(src, dest)
+                self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/projects/sync":
                 # Refresh a project's registry row from its project.toml on disk.
                 data = registry_mod.record(payload["path"])
@@ -606,6 +625,8 @@ _PAGE = r"""<!DOCTYPE html>
   </nav>
   <span id="libActions">
     <button onclick="rescan()">Re-scan all</button>
+    <button onclick="exportDlg.showModal()">⬇ Export</button>
+    <button onclick="importDlg.showModal()">⬆ Import</button>
     <button class="primary" onclick="addDlg.showModal()">+ Add folder</button>
   </span>
   <span id="projActions" style="display:none">
@@ -805,6 +826,53 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="row">
     <button onclick="addDlg.close()">Cancel</button>
     <button class="primary" onclick="doAdd()">Add</button>
+  </div>
+</dialog>
+
+<dialog id="exportDlg">
+  <h3>Export library</h3>
+  <label>What to export</label>
+  <select id="expMode" style="width:100%" onchange="onExpMode()">
+    <option value="db">Full DB backup — catalog only, no audio copied (.db)</option>
+    <option value="bundle">Portable bundle — catalog + copies of the audio files (.zip)</option>
+  </select>
+  <small style="opacity:.7">DB backup is small and fast; restore it on a machine that shares the same sample paths. A bundle is self-contained and portable anywhere.</small>
+  <label style="margin-top:12px">Output path (on this machine)</label>
+  <input id="expOut" placeholder="/home/you/mendell-library.db">
+  <div id="expIncludeRow" style="display:none;margin-top:10px">
+    <label>Bundle contents</label>
+    <span style="display:flex;gap:14px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="expInc" value="samples" checked style="width:auto">samples</label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="expInc" value="kits" checked style="width:auto">kits</label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="expInc" value="projects" checked style="width:auto">projects</label>
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="expInc" value="midi" checked style="width:auto">midi</label>
+    </span>
+  </div>
+  <div class="row">
+    <button onclick="exportDlg.close()">Cancel</button>
+    <button class="primary" onclick="doExport()">Export</button>
+  </div>
+</dialog>
+
+<dialog id="importDlg">
+  <h3>Import library</h3>
+  <label>What to import</label>
+  <select id="impMode" style="width:100%" onchange="onImpMode()">
+    <option value="db">Full DB backup (.db) — replaces the current catalog</option>
+    <option value="bundle">Portable bundle (.zip) — extracts audio + registers it</option>
+  </select>
+  <label style="margin-top:12px">Source path (on this machine)</label>
+  <input id="impSrc" placeholder="/home/you/mendell-library.db">
+  <div id="impDestRow" style="display:none;margin-top:10px">
+    <label>Extract bundle into</label>
+    <input id="impDest" placeholder="blank = folder next to the .zip">
+  </div>
+  <label id="impOverwriteRow" style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
+    <input type="checkbox" id="impOverwrite" style="width:auto"> Overwrite the existing library DB
+  </label>
+  <div class="row">
+    <button onclick="importDlg.close()">Cancel</button>
+    <button class="primary" onclick="doImport()">Import</button>
   </div>
 </dialog>
 
@@ -1015,6 +1083,55 @@ async function doAdd() {
     })});
     addDlg.close(); addName.value=addPath.value=addTags.value="";
     loadLibs(); search();
+  } catch(e) { alert(e.message); }
+}
+
+// ---- Library export / import -------------------------------------------
+function onExpMode() {
+  const db = document.getElementById("expMode").value === "db";
+  document.getElementById("expIncludeRow").style.display = db ? "none" : "block";
+  document.getElementById("expOut").placeholder = db
+    ? "/home/you/mendell-library.db" : "/home/you/mendell-library.zip";
+}
+function onImpMode() {
+  const db = document.getElementById("impMode").value === "db";
+  document.getElementById("impDestRow").style.display = db ? "none" : "block";
+  document.getElementById("impOverwriteRow").style.display = db ? "flex" : "none";
+  document.getElementById("impSrc").placeholder = db
+    ? "/home/you/mendell-library.db" : "/home/you/mendell-library.zip";
+}
+async function doExport() {
+  try {
+    const out = document.getElementById("expOut").value.trim();
+    if (!out) { alert("Output path is required."); document.getElementById("expOut").focus(); return; }
+    const mode = document.getElementById("expMode").value;
+    const body = { mode, out };
+    if (mode === "bundle") {
+      body.include = [...document.querySelectorAll(".expInc:checked")].map(c => c.value);
+      if (!body.include.length) { alert("Pick at least one bundle content type."); return; }
+    }
+    const r = await api("/api/library/export", { method:"POST", body: JSON.stringify(body) });
+    exportDlg.close();
+    if (mode === "db") {
+      alert("Exported DB backup to " + r.path + " (" + r.bytes + " bytes).");
+    } else {
+      const n = (r.samples||[]).length + (r.kits||[]).length + (r.projects||[]).length + (r.midi||[]).length;
+      alert("Exported bundle to " + out + " (" + n + " items).");
+    }
+  } catch(e) { alert(e.message); }
+}
+async function doImport() {
+  try {
+    const src = document.getElementById("impSrc").value.trim();
+    if (!src) { alert("Source path is required."); document.getElementById("impSrc").focus(); return; }
+    const mode = document.getElementById("impMode").value;
+    const body = { mode, src };
+    if (mode === "db") body.overwrite = document.getElementById("impOverwrite").checked;
+    else body.dest = document.getElementById("impDest").value.trim();
+    await api("/api/library/import", { method:"POST", body: JSON.stringify(body) });
+    importDlg.close();
+    loadLibs(); search();
+    alert("Import complete.");
   } catch(e) { alert(e.message); }
 }
 

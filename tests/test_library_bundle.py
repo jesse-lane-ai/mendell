@@ -242,3 +242,64 @@ class TestImportBundle:
         assert results["samples"]["added"] == 2
         libs = library_mod.list_entries()["libraries"]
         assert {l["name"] for l in libs} == {"lib-a", "lib-b"}
+
+
+class TestDbBackupRestore:
+    """Full-DB snapshot backup/restore (catalog only, no audio copied)."""
+
+    def test_backup_creates_db_file(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("snap", str(src_sample_folder), tags=["drums"])
+        out = tmp_path / "backup.db"
+        res = bundle_mod.export_db(out)
+        assert res["format"] == "db"
+        assert Path(res["path"]).is_file()
+        assert res["bytes"] > 0
+
+    def test_backup_appends_db_suffix(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("snap", str(src_sample_folder))
+        res = bundle_mod.export_db(tmp_path / "nosuffix")
+        assert res["path"].endswith(".db")
+
+    def test_backup_requires_existing_db(self, tmp_path, monkeypatch):
+        empty = tmp_path / "void" / "library.db"
+        empty.parent.mkdir(parents=True)
+        monkeypatch.setenv(library_mod.CONFIG_ENV_VAR, str(empty))
+        with pytest.raises(FileNotFoundError):
+            bundle_mod.export_db(tmp_path / "x.db")
+
+    def test_restore_onto_fresh_machine(self, src_config, src_sample_folder, tmp_path, monkeypatch, dst_config):
+        library_mod.add("snap", str(src_sample_folder), tags=["drums"])
+        out = tmp_path / "backup.db"
+        bundle_mod.export_db(out)
+
+        monkeypatch.setenv(library_mod.CONFIG_ENV_VAR, str(dst_config))
+        res = bundle_mod.import_db(out)
+        assert res["libraries"] == 1
+        libs = library_mod.list_entries()["libraries"]
+        assert {l["name"] for l in libs} == {"snap"}
+
+    def test_restore_refuses_to_clobber_without_overwrite(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("snap", str(src_sample_folder))
+        out = tmp_path / "backup.db"
+        bundle_mod.export_db(out)
+        # src_config DB is non-empty; restoring over it must refuse.
+        with pytest.raises(ValueError):
+            bundle_mod.import_db(out)
+
+    def test_restore_overwrite_replaces_catalog(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("snap", str(src_sample_folder))
+        out = tmp_path / "backup.db"
+        bundle_mod.export_db(out)
+        # Add another library, then restore the older snapshot over it.
+        other = tmp_path / "other"
+        _write_wav(other / "clap.wav")
+        library_mod.add("extra", str(other))
+        bundle_mod.import_db(out, overwrite=True)
+        libs = library_mod.list_entries()["libraries"]
+        assert {l["name"] for l in libs} == {"snap"}
+
+    def test_restore_rejects_non_mendell_db(self, src_config, tmp_path):
+        junk = tmp_path / "junk.db"
+        junk.write_bytes(b"not a sqlite db at all")
+        with pytest.raises(Exception):
+            bundle_mod.import_db(junk, overwrite=True)

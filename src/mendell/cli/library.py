@@ -192,3 +192,35 @@ def import_bundle_cmd(bundle_zip, dest):
     dest_dir = Path(dest) if dest else zip_path.parent / zip_path.stem
     data = bundle_mod.import_bundle(zip_path, dest_dir)
     return data, data
+
+
+@library.command("backup")
+@click.argument("out_db")
+@json_option
+@command
+def backup_cmd(out_db):
+    """Snapshot the entire library DB (catalog only, no audio copied) to OUT_DB.
+
+    Captures every registered library plus its indexed file metadata, kits,
+    projects, MIDI catalog, and recognition cache in a single small .db file.
+    Restore with `mendell library restore <file.db>`. Use this to back up or
+    move the catalog between machines that share the same sample paths; use
+    `mendell library export` for a portable bundle that also copies the audio.
+    """
+    from .. import library_bundle as bundle_mod
+    data = bundle_mod.export_db(out_db)
+    return data, data
+
+
+@library.command("restore")
+@click.argument("in_db")
+@click.option("--overwrite", is_flag=True, default=False,
+              help="Replace the existing library DB (otherwise refuses if one is present).")
+@json_option
+@command
+def restore_cmd(in_db, overwrite):
+    """Restore a DB snapshot created by `mendell library backup`, replacing the
+    live catalog. Refuses to clobber an existing non-empty DB unless --overwrite."""
+    from .. import library_bundle as bundle_mod
+    data = bundle_mod.import_db(in_db, overwrite=overwrite)
+    return data, data
