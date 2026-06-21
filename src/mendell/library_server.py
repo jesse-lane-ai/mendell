@@ -2271,7 +2271,7 @@ function renderArrangeGrid(snap) {
     const trkSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar == null) ? ";box-shadow:0 0 0 2px #fff inset" : "";
     html += '<div style="display:flex;align-items:stretch;margin-top:4px">';
     // Track label
-    html += '<div onclick="selectTrack(' + ti + ')" title="select track" ' +
+    html += '<div class="arr-tracklabel" data-ti="' + ti + '" onclick="selectTrack(' + ti + ')" title="select track" ' +
       'style="cursor:pointer;width:' + ARR_LABELW + 'px;flex:0 0 ' + ARR_LABELW + 'px;height:' + ARR_ROWH +
       'px;padding:0 6px;background:#1d2026;border-radius:5px;display:flex;align-items:center;gap:5px;overflow:hidden' + trkSel + '">' +
       '<span style="background:#3b5bdb;color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
@@ -2290,7 +2290,7 @@ function renderArrangeGrid(snap) {
       const left = (p.start_bar - 1) * ARR_PXBAR;
       const width = Math.max(p.length_bars * ARR_PXBAR - 2, 18);
       const sel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === p.start_bar) ? ";box-shadow:0 0 0 2px #fff inset" : "";
-      html += '<div class="arr-block" ' +
+      html += '<div class="arr-block" data-ti="' + ti + '" data-bar="' + p.start_bar + '" ' +
         (draggable ? 'draggable="true" ondragstart="arrDragStart(event,' + ti + ',' + p.start_bar + ')" ' : '') +
         'onclick="event.stopPropagation();selectClip(' + ti + ',' + p.start_bar + ')" ' +
         'ondblclick="event.stopPropagation();openClipEditor(' + ti + ',' + p.start_bar + ')" ' +
@@ -2385,13 +2385,32 @@ function _arrTrack(ti) { return (_arrSnap && _arrSnap.tracks) ? _arrSnap.tracks[
 function selectTrack(ti) {
   const t = _arrTrack(ti); if (!t) return;
   _arrSel = { track: t.name, type: t.type, bar: null, clip: null };
-  renderArrangeGrid(_arrSnap); renderArrSelection();
+  applyArrSelection(); renderArrSelection();
 }
 function selectClip(ti, bar) {
   const t = _arrTrack(ti); if (!t) return;
   const p = (t.placements || []).find(x => x.start_bar === bar);
   _arrSel = { track: t.name, type: t.type, bar, clip: p ? p.clip : null };
-  renderArrangeGrid(_arrSnap); renderArrSelection();
+  applyArrSelection(); renderArrSelection();
+}
+// Update selection highlight on the EXISTING grid nodes — never rebuild the
+// grid here. Rebuilding (renderArrangeGrid) on a single click destroys the
+// clicked block before the browser can pair it into a dblclick, which would
+// stop openClipEditor from ever firing.
+function applyArrSelection() {
+  document.querySelectorAll("#arrGrid .arr-block, #arrGrid .arr-tracklabel")
+    .forEach(el => { el.style.boxShadow = ""; });
+  if (!_arrSel || !_arrSnap) return;
+  const ti = (_arrSnap.tracks || []).findIndex(t => t.name === _arrSel.track);
+  if (ti < 0) return;
+  const sel = "0 0 0 2px #fff inset";
+  if (_arrSel.bar == null) {
+    const lbl = document.querySelector('#arrGrid .arr-tracklabel[data-ti="' + ti + '"]');
+    if (lbl) lbl.style.boxShadow = sel;
+  } else {
+    const blk = document.querySelector('#arrGrid .arr-block[data-ti="' + ti + '"][data-bar="' + _arrSel.bar + '"]');
+    if (blk) blk.style.boxShadow = sel;
+  }
 }
 
 function renderArrSelection() {
