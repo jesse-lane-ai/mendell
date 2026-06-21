@@ -160,7 +160,7 @@ def test_heuristic_recognizer_defers_on_unreadable_file():
 # --- registry -------------------------------------------------------------
 
 def test_list_backends():
-    assert list_backends() == ["ace-step", "clap", "gemini-embedding", "gemini-generative", "heuristic"]
+    assert list_backends() == ["ace-step", "clap", "heuristic"]
 
 
 def test_get_recognizer_unknown_backend_raises():
@@ -175,13 +175,6 @@ def test_get_recognizer_heuristic():
 def test_clap_backend_missing_dependency_raises_actionable_error():
     with pytest.raises(BadInputError, match=r"pip install 'mendell\[clap\]'"):
         get_recognizer("clap")
-
-
-def test_gemini_embedding_missing_dependency_raises_actionable_error(monkeypatch):
-    # Even with a key set, the missing SDK should be reported first.
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-    with pytest.raises(BadInputError, match=r"pip install 'mendell\[gemini\]'"):
-        get_recognizer("gemini-embedding")
 
 
 def test_ace_step_backend_missing_dependency_raises_actionable_error(monkeypatch):
@@ -199,11 +192,6 @@ def test_ace_step_backend_missing_dependency_raises_actionable_error(monkeypatch
     monkeypatch.setattr(builtins, "__import__", fake_import)
     with pytest.raises(BadInputError, match=r"pip install transformers"):
         get_recognizer("ace-step")
-
-
-def test_gemini_generative_missing_dependency_raises_actionable_error():
-    with pytest.raises(BadInputError, match=r"pip install 'mendell\[gemini\]'"):
-        get_recognizer("gemini-generative")
 
 
 def test_captioner_load_mode_validates(monkeypatch):

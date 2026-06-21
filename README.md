@@ -75,13 +75,6 @@ optional extras against the local checkout:
 ```bash
 # Local CLAP backend (--recognize clap) — pulls in torch + laion-clap (large download):
 pip install -e '.[clap]'
-
-# Cloud Gemini backends (--recognize gemini-embedding | gemini-generative):
-pip install -e '.[gemini]'
-export GEMINI_API_KEY=...        # or GOOGLE_API_KEY — read at runtime
-
-# ...or both at once:
-pip install -e '.[clap,gemini]'
 ```
 
 Each backend is lazy-loaded, so a missing package or API key only errors when you
@@ -353,8 +346,8 @@ By default the category comes from filename/folder keywords (instant). Pass `--r
 additionally *listen* to each file: a specific filename keyword still wins, but recognition
 fills in the rest and adds a multi-valued **instruments** list (a melodic loop →
 `[piano, strings]`; a full loop → `[drums, bass, keys]`) that `search --instrument` filters
-on. Four backends trade accuracy for weight — `heuristic` (local, zero-dep, coarse category
-only), `clap` (local, opt-in), and `gemini-embedding` / `gemini-generative` (cloud, opt-in);
+on. The backends trade accuracy for weight — `heuristic` (local, zero-dep, coarse category
+only), `clap` (local, opt-in), and `ace-step` (local, opt-in);
 results are cached per file, so re-scans only re-analyze what changed. See
 [`SPEC.md`](SPEC.md#sample-library) for the full reference.
 

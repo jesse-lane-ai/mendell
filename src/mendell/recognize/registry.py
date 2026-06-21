@@ -13,8 +13,6 @@ from typing import Callable
 from ..errors import BadInputError
 from .ace_step import AceStepRecognizer
 from .clap import ClapRecognizer
-from .gemini_embedding import GeminiEmbeddingRecognizer
-from .gemini_generative import GeminiGenerativeRecognizer
 from .heuristic import HeuristicRecognizer
 from .types import Recognizer
 
@@ -24,8 +22,6 @@ from .types import Recognizer
 _BACKENDS: dict[str, Callable[[], Recognizer]] = {
     "heuristic": HeuristicRecognizer,
     "clap": ClapRecognizer,
-    "gemini-embedding": GeminiEmbeddingRecognizer,
-    "gemini-generative": GeminiGenerativeRecognizer,
     "ace-step": AceStepRecognizer,
 }
 

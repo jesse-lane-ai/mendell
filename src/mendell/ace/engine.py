@@ -1,7 +1,7 @@
 """``AceEngine`` — a thin, lazy wrapper around the ACE-Step 1.5 model family.
 
 ACE-Step is a heavyweight generative audio model (LM planner + Diffusion
-Transformer). Like the ``clap`` / ``gemini`` recognizers, it is an **opt-in
+Transformer). Like the ``clap`` recognizer, it is an **opt-in
 extra**: the base Mendell install never imports it, and selecting any ACE
 command without the extra installed (or without a checkpoint available) raises
 an actionable ``BadInputError`` instead of a bare ``ImportError``.
