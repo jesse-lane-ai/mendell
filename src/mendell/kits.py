@@ -87,6 +87,17 @@ def _migrate(con: sqlite3.Connection) -> None:
 # Core drum categories picked for quick_kit — one file per category
 _QUICK_KIT_CATEGORIES = ["kick", "snare", "hat", "clap", "tom", "crash", "rim"]
 
+# Authoritative pad → category mapping for quick_kit.  This mirrors the JS
+# ``PAD_CAT`` constant in ``library_server.py`` (the 4x4 MPC-style pad grid over
+# GM drum notes 36–51, pad 1 = note 36).  Keep these 16 note→category pairs in
+# sync with that JS table — do NOT diverge.
+_PAD_CATEGORIES: dict[int, str] = {
+    36: "kick", 37: "rim", 38: "snare", 39: "clap",
+    40: "perc", 41: "perc", 42: "hat", 43: "perc",
+    44: "perc", 45: "tom", 46: "openhat", 47: "perc",
+    48: "perc", 49: "crash", 50: "perc", 51: "ride",
+}
+
 
 def _row_to_summary(row: sqlite3.Row) -> dict[str, Any]:
     return {
@@ -340,6 +351,38 @@ def random_slot(
     )
 
 
+def randomize_all(
+    kit_name: str,
+    *,
+    library: str | None = None,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Fill (or replace) all 16 GM drum pads (notes 36..51) with random
+    library one-shots, reusing the per-pad selection logic in
+    :func:`random_slot`.
+
+    If *seed* is given, each pad is seeded deterministically (``seed + note``)
+    so results are reproducible while pads still differ. Individual pad
+    failures are collected rather than aborting the whole operation.
+    """
+    create(kit_name)  # ensure kit exists
+    filled: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for note in range(36, 52):
+        pad_seed = None if seed is None else seed + note
+        try:
+            random_slot(kit_name, note, library=library, seed=pad_seed)
+            filled.append({"gm_note": note, "category": _category_for_note(note)})
+        except (BadInputError, NotFoundError) as exc:
+            failures.append({"gm_note": note, "error": str(exc)})
+    return {
+        **show(kit_name),
+        "filled": filled,
+        "filled_count": len(filled),
+        "failures": failures,
+    }
+
+
 def apply_to_project(
     kit_name: str,
     project_dir: Path,
@@ -387,63 +430,82 @@ def quick_kit(
     library: str | None = None,
     seed: int | None = None,
 ) -> dict[str, Any]:
-    """Assemble a kit by randomly picking one one-shot per drum category from
-    the sample library.
+    """Assemble a kit by filling all 16 GM drum pads (notes 36–51) with random
+    one-shots from the sample library.
+
+    Each pad has a target category (see :data:`_PAD_CATEGORIES`, which mirrors
+    the web UI's 4x4 pad grid).  For every pad we pick a random library one-shot
+    matching its category; samples may be reused across pads but variety is
+    preferred (an unused sample is chosen ahead of a previously-used one when the
+    category pool allows).  If a pad's category has no matches at all, we fall
+    back to any available one-shot so the pad still gets filled.
 
     ``library`` restricts the search to one registered library (default: all).
     ``seed`` makes selection deterministic (useful for tests / reproducibility).
 
-    Returns the result of :func:`show` after building the kit.
+    Returns the result of :func:`show` after building the kit, plus
+    ``assigned_categories`` (per filled pad) and ``missing_categories`` (only for
+    pads that could not be filled at all — i.e. the library is empty).
     """
     rng = random.Random(seed)
 
     # Ensure the kit row exists first
     create(name)
 
-    assigned_categories: list[str] = []
-    missing_categories: list[str] = []
-
-    for category in _QUICK_KIT_CATEGORIES:
-        result = library_mod.search(
-            category=category,
-            kind="one-shot",
-            library=library,
-        )
-        candidates = result.get("matches", [])
-
-        if not candidates:
+    def _candidates(category: str | None) -> list[dict]:
+        """One-shot matches for a category (or any one-shot when category is None)."""
+        result = library_mod.search(category=category, kind="one-shot", library=library)
+        matches = result.get("matches", [])
+        if not matches:
             # Retry without the kind filter — some DBs may not have kind indexed
             result2 = library_mod.search(category=category, library=library)
-            candidates = [
+            matches = [
                 m for m in result2.get("matches", [])
                 if m.get("kind") in ("one-shot", None, "unknown")
             ]
+        return matches
 
-        if not candidates:
+    # Cache category lookups so we don't re-query for the many "perc" pads.
+    cache: dict[str | None, list[dict]] = {}
+
+    def _lookup(category: str | None) -> list[dict]:
+        if category not in cache:
+            cache[category] = _candidates(category)
+        return cache[category]
+
+    used_paths: set[str] = set()
+
+    def _pick(category: str) -> str | None:
+        """Resolve a usable source path for *category*, preferring unused ones,
+        falling back to any one-shot. Returns a filesystem path or None."""
+        for cat in (category, None):  # category first, then "any" fallback
+            candidates = list(_lookup(cat))
+            if not candidates:
+                continue
+            rng.shuffle(candidates)
+            # Prefer candidates whose resolved path hasn't been used yet.
+            for prefer_unused in (True, False):
+                for chosen in candidates:
+                    path = library_mod.resolve_ref(chosen["ref"])
+                    if path is None or not path.exists():
+                        continue
+                    sp = str(path)
+                    if prefer_unused and sp in used_paths:
+                        continue
+                    return sp
+        return None
+
+    assigned_categories: list[str] = []
+    missing_categories: list[str] = []
+
+    for gm_note in sorted(_PAD_CATEGORIES):
+        category = _PAD_CATEGORIES[gm_note]
+        source = _pick(category)
+        if source is None:
             missing_categories.append(category)
             continue
-
-        chosen = rng.choice(candidates)
-        ref = chosen["ref"]
-
-        # Resolve to a real path
-        path = library_mod.resolve_ref(ref)
-        if path is None or not path.exists():
-            missing_categories.append(category)
-            continue
-
-        gm_note = _guess_note(category) or _guess_note(Path(str(path)).stem)
-        if gm_note is None:
-            # Fall back to the first GM keyword match for this category
-            for keywords, note in _GM_DRUM_KEYWORDS:
-                if category in keywords or any(category == kw for kw in keywords):
-                    gm_note = note
-                    break
-        if gm_note is None:
-            missing_categories.append(category)
-            continue
-
-        add_slot(name, gm_note, str(path), slot_name=Path(str(path)).stem)
+        used_paths.add(source)
+        add_slot(name, gm_note, source, slot_name=Path(source).stem)
         assigned_categories.append(category)
 
     kit_data = show(name)
