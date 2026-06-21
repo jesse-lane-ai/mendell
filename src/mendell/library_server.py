@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import threading
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +42,69 @@ def _json_bytes(obj: object) -> bytes:
 
 
 _EXPORT_EXTS = (".wav", ".mp3", ".flac", ".ogg")
+
+
+# In-flight import jobs, keyed by a generated id. An "Add folder" request can
+# take minutes (especially with --recognize), so it runs in a background thread
+# while the UI polls /api/add/progress for a real progress bar. Guarded by a
+# lock since ThreadingHTTPServer handles each request on its own thread.
+_IMPORT_JOBS: dict[str, dict] = {}
+_IMPORT_JOBS_LOCK = threading.Lock()
+
+
+def _job_set(job_id: str, **fields) -> None:
+    with _IMPORT_JOBS_LOCK:
+        _IMPORT_JOBS.setdefault(job_id, {}).update(fields)
+
+
+def _job_get(job_id: str) -> dict | None:
+    with _IMPORT_JOBS_LOCK:
+        job = _IMPORT_JOBS.get(job_id)
+        return dict(job) if job is not None else None
+
+
+def _run_import_job(job_id: str, payload: dict) -> None:
+    """Background worker for an 'Add folder' import. Updates the job's progress
+    record as it goes and stashes the final result (or error) for the poller."""
+    # recognize: a backend name, "" (filename-only), or "__default__"
+    # (honor the library.recognizer config setting, like the CLI).
+    recognize = payload.get("recognize", "__default__")
+    if recognize == "__default__":
+        recognize = config_mod.library_recognizer_default()
+    elif recognize == "":
+        recognize = None
+    # For the ACE-Step captioner, let the UI pick the in-flight quantization
+    # mode (full/8bit/4bit) by setting the env var the captioner reads.
+    if recognize == "ace-step":
+        load = (payload.get("captioner_load") or "").strip()
+        if load:
+            os.environ["ACESTEP_CAPTIONER_LOAD"] = load
+
+    def on_progress(phase: str, done: int, total: int) -> None:
+        _job_set(job_id, phase=phase, done=done, total=total)
+
+    try:
+        data = library_mod.add(
+            payload["name"], payload["path"],
+            tags=[t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()] or None,
+            analyze=bool(payload.get("analyze")),
+            recognize=recognize,
+            progress=on_progress,
+        )
+        _job_set(job_id, phase="done", result=data)
+    except Exception as err:  # noqa: BLE001
+        code = getattr(err, "code", 3)
+        _job_set(job_id, phase="error", error=str(err), code=code)
+    finally:
+        # Release the captioner's VRAM once the scan is done (even on failure) —
+        # the server is long-lived and would otherwise pin ~6–22 GB. Set
+        # MENDELL_CAPTIONER_KEEP_WARM=1 to keep it resident for fast re-imports.
+        if recognize == "ace-step" and not os.environ.get("MENDELL_CAPTIONER_KEEP_WARM"):
+            try:
+                from .ace.captioner import get_captioner
+                get_captioner().unload()
+            except Exception:
+                pass
 
 
 def _project_export(project_path: str) -> Path | None:
@@ -120,6 +184,17 @@ class _Handler(BaseHTTPRequestHandler):
                 }})
             elif path == "/api/fs/list":
                 self._send_json({"ok": True, "data": self._fs_list(query)})
+            elif path == "/api/add/progress":
+                job_id = query.get("job", [None])[0]
+                job = _job_get(job_id) if job_id else None
+                if job is None:
+                    raise MendellError("unknown import job", code=1)
+                # Drop a finished job from the store after it's been read out, so
+                # the dict doesn't grow without bound over a long server session.
+                if job.get("phase") in ("done", "error"):
+                    with _IMPORT_JOBS_LOCK:
+                        _IMPORT_JOBS.pop(job_id, None)
+                self._send_json({"ok": True, "data": job})
             elif path == "/api/search":
                 self._send_json({"ok": True, "data": self._do_search(query)})
             elif path == "/api/audio":
@@ -218,39 +293,32 @@ class _Handler(BaseHTTPRequestHandler):
                 data = engine_mod.export(project_dir, format=payload.get("format") or "wav")
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/add":
-                # recognize: a backend name, "" (filename-only), or "__default__"
-                # (honor the library.recognizer config setting, like the CLI).
-                recognize = payload.get("recognize", "__default__")
-                if recognize == "__default__":
-                    recognize = config_mod.library_recognizer_default()
-                elif recognize == "":
-                    recognize = None
-                # For the ACE-Step captioner, let the UI pick the in-flight
-                # quantization mode (full/8bit/4bit) by setting the env var the
-                # captioner reads. We free the model after each import (below),
-                # so a different mode picked next time actually takes effect.
-                if recognize == "ace-step":
-                    load = (payload.get("captioner_load") or "").strip()
-                    if load:
-                        os.environ["ACESTEP_CAPTIONER_LOAD"] = load
-                try:
-                    data = library_mod.add(
-                        payload["name"], payload["path"],
-                        tags=[t.strip() for t in (payload.get("tags") or "").split(",") if t.strip()] or None,
-                        analyze=bool(payload.get("analyze")),
-                        recognize=recognize,
-                    )
-                finally:
-                    # Release the captioner's VRAM once the scan is done (even on
-                    # failure) — the server is long-lived and would otherwise pin
-                    # ~6–22 GB indefinitely. Set MENDELL_CAPTIONER_KEEP_WARM=1 to
-                    # keep it resident for fast back-to-back imports instead.
-                    if recognize == "ace-step" and not os.environ.get("MENDELL_CAPTIONER_KEEP_WARM"):
-                        try:
-                            from .ace.captioner import get_captioner
-                            get_captioner().unload()
-                        except Exception:
-                            pass
+                # Imports can run for minutes, so kick the work onto a background
+                # thread and hand the client a job id to poll for progress.
+                job_id = uuid.uuid4().hex
+                _job_set(job_id, phase="starting", done=0, total=0)
+                threading.Thread(
+                    target=_run_import_job, args=(job_id, dict(payload)), daemon=True
+                ).start()
+                self._send_json({"ok": True, "data": {"job": job_id}})
+            elif parsed.path == "/api/library/rename":
+                data = library_mod.rename(payload["name"], payload["new_name"])
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/library/tags":
+                tags = payload.get("tags")
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(",") if t.strip()]
+                data = library_mod.set_tags(payload["name"], tags or [])
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/library/rescan":
+                data = library_mod.scan(payload["name"])
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/sample/update":
+                fields = {k: payload[k] for k in ("category", "kind", "bpm") if payload.get(k) not in (None, "")}
+                data = library_mod.update_file(payload["library"], payload["rel_path"], **fields)
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/sample/remove":
+                data = library_mod.remove_file(payload["library"], payload["rel_path"])
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/kits/create":
                 data = kits_mod.create(payload["name"], description=payload.get("description") or "")
@@ -655,6 +723,10 @@ _PAGE = r"""<!DOCTYPE html>
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
   .brow { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #2a2a2a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .brow:hover { background: #2a2a2a; }
+  .pbar { height: 10px; background: #2a2a2a; border-radius: 5px; overflow: hidden; }
+  .pfill { height: 100%; width: 0%; background: #4a9eff; transition: width .2s ease; }
+  .pfill.indet { width: 35% !important; animation: indet 1.1s infinite ease-in-out; }
+  @keyframes indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
 </style>
 </head>
 <body>
@@ -868,9 +940,13 @@ _PAGE = r"""<!DOCTYPE html>
   <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
     <input type="checkbox" id="addAnalyze" style="width:auto"> Analyze BPM of loops (slower)
   </label>
+  <div id="addProgress" style="display:none;margin-top:14px">
+    <div id="addProgLabel" class="muted" style="font-size:12px;margin-bottom:4px">Starting…</div>
+    <div class="pbar"><div id="addProgFill" class="pfill"></div></div>
+  </div>
   <div class="row">
-    <button onclick="addDlg.close()">Cancel</button>
-    <button class="primary" onclick="doAdd()">Add</button>
+    <button id="addCancelBtn" onclick="addDlg.close()">Cancel</button>
+    <button id="addBtn" class="primary" onclick="doAdd()">Add</button>
   </div>
 </dialog>
 
@@ -932,6 +1008,38 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="row">
     <button onclick="browseDlg.close()">Cancel</button>
     <button id="browsePick" class="primary" onclick="browseChoose()">Select this folder</button>
+  </div>
+</dialog>
+
+<dialog id="libManageDlg">
+  <h3>Manage library</h3>
+  <input type="hidden" id="lmOrig">
+  <label>Name</label><input id="lmName">
+  <label>Tags (comma-separated)</label><input id="lmTags" placeholder="drums,lofi">
+  <div style="margin-top:12px">
+    <button type="button" onclick="lmRescan()">↻ Re-scan this library</button>
+    <small id="lmRescanMsg" class="muted" style="margin-left:8px"></small>
+  </div>
+  <div class="row">
+    <button onclick="libManageDlg.close()">Cancel</button>
+    <button class="primary" onclick="lmSave()">Save</button>
+  </div>
+</dialog>
+
+<dialog id="sampleEditDlg">
+  <h3>Edit sample</h3>
+  <div id="seRef" class="muted" style="font-size:12px;margin-bottom:10px;word-break:break-all"></div>
+  <input type="hidden" id="seLib"><input type="hidden" id="seRel">
+  <label>Category</label><input id="seCategory" placeholder="kick / snare / loop / …">
+  <label>Kind</label>
+  <select id="seKind" style="width:100%">
+    <option value="">(unchanged)</option><option value="one-shot">one-shot</option>
+    <option value="loop">loop</option><option value="unknown">unknown</option>
+  </select>
+  <label>BPM</label><input id="seBpm" type="number" step="0.01" placeholder="leave blank to keep">
+  <div class="row">
+    <button onclick="sampleEditDlg.close()">Cancel</button>
+    <button class="primary" onclick="saveSampleEdit()">Save</button>
   </div>
 </dialog>
 
@@ -1019,14 +1127,20 @@ async function api(url, opts) {
   return j.data;
 }
 
+let _libs = [];
 async function loadLibs() {
   const { libraries } = await api("/api/libraries");
+  _libs = libraries;
   const el = document.getElementById("libs");
   let html = `<div class="lib ${activeLib===""?"active":""}" onclick="selectLib('')">All libraries</div>`;
   for (const l of libraries) {
-    html += `<div class="lib ${activeLib===l.name?"active":""}" onclick="selectLib('${l.name}')">
-      <span>${l.name}<br><small>${l.file_count} files</small></span>
-      <span class="x" title="unregister" onclick="event.stopPropagation();removeLib('${l.name}')">✕</span>
+    const lname = l.name.replace(/'/g, "\\'");
+    html += `<div class="lib ${activeLib===l.name?"active":""}" onclick="selectLib('${lname}')">
+      <span>${esc(l.name)}<br><small>${l.file_count} files</small></span>
+      <span style="display:flex;gap:6px">
+        <span class="x" title="manage" onclick="event.stopPropagation();manageLib('${lname}')">⚙</span>
+        <span class="x" title="unregister" onclick="event.stopPropagation();removeLib('${lname}')">✕</span>
+      </span>
     </div>`;
   }
   el.innerHTML = html;
@@ -1065,28 +1179,32 @@ function populateCategories(matches) {
     [...categoriesSeen].sort().map(c => `<option ${c===cur?"selected":""}>${c}</option>`).join("");
 }
 
+let lastMatches = [];
 function render(matches) {
+  lastMatches = matches;
   const el = document.getElementById("results");
   if (!matches.length) { el.innerHTML = '<div class="empty">No matching samples.</div>'; return; }
   let html = `<table>
     <colgroup>
       <col class="c-play"><col class="c-ref"><col class="c-cat"><col class="c-kind">
-      <col class="c-bpm"><col class="c-dur"><col class="c-inst"><col class="c-cap"><col class="c-tags">
+      <col class="c-bpm"><col class="c-dur"><col class="c-inst"><col class="c-cap"><col class="c-tags"><col class="c-act">
     </colgroup>
-    <thead><tr><th></th><th>ref</th><th>category</th><th>kind</th><th class="num">bpm</th><th class="num">dur</th><th>instruments</th><th>caption</th><th>tags</th></tr></thead><tbody>`;
+    <thead><tr><th></th><th>ref</th><th>category</th><th>kind</th><th class="num">bpm</th><th class="num">dur</th><th>instruments</th><th>caption</th><th>tags</th><th></th></tr></thead><tbody>`;
   for (const m of matches) {
     const ref = m.ref.replace(/'/g, "\\'");
     const cap = esc(m.caption||"");
     html += `<tr>
       <td><button class="play" onclick="play(this,'${ref}')">▶</button></td>
-      <td class="ref">${m.ref}</td>
-      <td>${m.category||""}</td>
-      <td class="muted">${m.kind||""}</td>
+      <td class="ref">${esc(m.ref)}</td>
+      <td>${esc(m.category||"")}</td>
+      <td class="muted">${esc(m.kind||"")}</td>
       <td class="num">${m.bpm?Math.round(m.bpm):""}</td>
       <td class="num muted">${m.duration?m.duration.toFixed(1)+"s":""}</td>
-      <td>${(m.instruments||[]).map(i=>`<span class="tag">${i}</span>`).join("")}</td>
+      <td>${(m.instruments||[]).map(i=>`<span class="tag">${esc(i)}</span>`).join("")}</td>
       <td class="cap muted" title="${cap}">${cap}</td>
-      <td>${(m.tags||[]).map(x=>`<span class="tag">${x}</span>`).join("")}</td>
+      <td>${(m.tags||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join("")}</td>
+      <td class="num"><button class="play" title="edit" onclick="editSample('${ref}')">✎</button>
+        <button class="play" title="remove" onclick="removeSample('${ref}')">🗑</button></td>
     </tr>`;
   }
   el.innerHTML = html + "</tbody></table>";
@@ -1110,6 +1228,84 @@ async function removeLib(name) {
   if (activeLib === name) activeLib = "";
   loadLibs(); search();
 }
+
+// ---- Library management (rename / tags / single re-scan) ----------------
+function manageLib(name) {
+  const lib = _libs.find(l => l.name === name);
+  document.getElementById("lmOrig").value = name;
+  document.getElementById("lmName").value = name;
+  document.getElementById("lmTags").value = (lib && lib.tags ? lib.tags : []).join(", ");
+  document.getElementById("lmRescanMsg").textContent = "";
+  libManageDlg.showModal();
+}
+async function lmSave() {
+  try {
+    const orig = document.getElementById("lmOrig").value;
+    const newName = document.getElementById("lmName").value.trim();
+    const tags = document.getElementById("lmTags").value;
+    let cur = orig;
+    if (newName && newName !== orig) {
+      await api("/api/library/rename", { method:"POST", body: JSON.stringify({name: orig, new_name: newName}) });
+      cur = newName;
+      if (activeLib === orig) activeLib = newName;
+    }
+    await api("/api/library/tags", { method:"POST", body: JSON.stringify({name: cur, tags}) });
+    libManageDlg.close();
+    loadLibs(); search();
+  } catch(e) { alert(e.message); }
+}
+async function lmRescan() {
+  const msg = document.getElementById("lmRescanMsg");
+  try {
+    msg.textContent = "re-scanning…";
+    const name = document.getElementById("lmOrig").value;
+    const r = await api("/api/library/rescan", { method:"POST", body: JSON.stringify({name}) });
+    const scanned = (r.scanned && r.scanned[0]) ? r.scanned[0] : null;
+    msg.textContent = "done" + (scanned ? " — " + scanned.file_count + " files" : "");
+    loadLibs(); search();
+  } catch(e) { msg.textContent = ""; alert(e.message); }
+}
+
+// ---- Per-sample edit / remove -------------------------------------------
+function editSample(ref) {
+  const slash = ref.indexOf("/");
+  const lib = ref.slice(0, slash), rel = ref.slice(slash + 1);
+  const m = (lastMatches || []).find(x => x.ref === ref) || {};
+  document.getElementById("seRef").textContent = ref;
+  document.getElementById("seLib").value = lib;
+  document.getElementById("seRel").value = rel;
+  document.getElementById("seCategory").value = m.category || "";
+  document.getElementById("seKind").value = "";
+  document.getElementById("seBpm").value = m.bpm != null ? m.bpm : "";
+  sampleEditDlg.showModal();
+}
+async function saveSampleEdit() {
+  try {
+    const body = {
+      library: document.getElementById("seLib").value,
+      rel_path: document.getElementById("seRel").value,
+    };
+    const cat = document.getElementById("seCategory").value.trim();
+    const kind = document.getElementById("seKind").value;
+    const bpm = document.getElementById("seBpm").value;
+    if (cat) body.category = cat;
+    if (kind) body.kind = kind;
+    if (bpm !== "") body.bpm = bpm;
+    await api("/api/sample/update", { method:"POST", body: JSON.stringify(body) });
+    sampleEditDlg.close();
+    search();
+  } catch(e) { alert(e.message); }
+}
+async function removeSample(ref) {
+  if (!confirm(`Remove '${ref}' from the catalog? (file on disk is left untouched)`)) return;
+  try {
+    const slash = ref.indexOf("/");
+    await api("/api/sample/remove", { method:"POST", body: JSON.stringify({
+      library: ref.slice(0, slash), rel_path: ref.slice(slash + 1),
+    })});
+    search(); loadLibs();
+  } catch(e) { alert(e.message); }
+}
 let recognizeDefault = null;
 async function loadBackends() {
   const { backends, default: def } = await api("/api/backends");
@@ -1131,18 +1327,49 @@ function onRecognizeChange() {
     (val === "ace-step") ? "block" : "none";
 }
 
+const PHASE_LABEL = { starting:"Starting…", scanning:"Scanning folder…",
+  indexing:"Indexing samples", recognizing:"Recognizing audio" };
+function setAddBusy(busy) {
+  document.getElementById("addBtn").disabled = busy;
+  document.getElementById("addProgress").style.display = busy ? "block" : "none";
+}
+function setProg(phase, done, total) {
+  const lbl = document.getElementById("addProgLabel");
+  const fill = document.getElementById("addProgFill");
+  const name = PHASE_LABEL[phase] || phase;
+  if (total > 0) {
+    const pct = Math.min(100, Math.round(100 * done / total));
+    fill.classList.remove("indet");
+    fill.style.width = pct + "%";
+    lbl.textContent = name + " — " + done + "/" + total + " (" + pct + "%)";
+  } else {
+    fill.classList.add("indet");
+    lbl.textContent = name;
+  }
+}
 async function doAdd() {
+  if (!addPath.value.trim()) { alert("Path is required."); addPath.focus(); return; }
   try {
-    if (!addPath.value.trim()) { alert("Path is required."); addPath.focus(); return; }
-    await api("/api/add", { method:"POST", body: JSON.stringify({
+    setAddBusy(true);
+    setProg("starting", 0, 0);
+    const { job } = await api("/api/add", { method:"POST", body: JSON.stringify({
       name: nameOrSlug("addName"), path: addPath.value.trim(), tags: addTags.value,
       recognize: document.getElementById("addRecognize").value,
       captioner_load: document.getElementById("addCaptionerLoad").value,
       analyze: document.getElementById("addAnalyze").checked,
     })});
+    // Poll for progress until the background import finishes or errors.
+    while (true) {
+      await new Promise(r => setTimeout(r, 400));
+      const s = await api("/api/add/progress?job=" + encodeURIComponent(job));
+      if (s.phase === "done") break;
+      if (s.phase === "error") throw new Error(s.error || "import failed");
+      setProg(s.phase, s.done || 0, s.total || 0);
+    }
+    setAddBusy(false);
     addDlg.close(); addName.value=addPath.value=addTags.value="";
     loadLibs(); search();
-  } catch(e) { alert(e.message); }
+  } catch(e) { setAddBusy(false); alert(e.message); }
 }
 
 // ---- Library export / import -------------------------------------------

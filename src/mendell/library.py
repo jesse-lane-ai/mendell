@@ -323,6 +323,7 @@ def _write_recognition_cache(con: sqlite3.Connection, library_name: str, backend
 def _index_folder(
     folder: Path, *, analyze: bool = False, recognize: str | None = None,
     con: sqlite3.Connection | None = None, library_name: str | None = None,
+    progress=None,
 ) -> list[dict[str, Any]]:
     """Walk ``folder`` and build the per-file index.
 
@@ -339,6 +340,15 @@ def _index_folder(
     """
     files = _scan_folder(folder)
 
+    def _emit(phase: str, done: int, total: int) -> None:
+        if progress is not None:
+            try:
+                progress(phase, done, total)
+            except Exception:
+                pass  # progress reporting must never break an import
+
+    _emit("scanning", 0, len(files))
+
     # Filename-only pass first — cheap, always runs, and gives the recognizer
     # the `kind` it needs to pick the right label vocabulary.
     # name_classify runs first to extract folder-path context (key/scale/bpm
@@ -347,7 +357,9 @@ def _index_folder(
 
     base: list[dict[str, Any]] = []
     caches: dict[str, audio_analysis._AnalysisCache] = {}
-    for file_path in files:
+    total = len(files)
+    for idx, file_path in enumerate(files):
+        _emit("indexing", idx, total)
         name_info = _classify_from_names(file_path)
         category, category_source = _guess_category_with_source(file_path)
         # Upgrade category from name_classify when the simpler heuristic fell back.
@@ -385,6 +397,8 @@ def _index_folder(
             "name_scale": name_info["scale"],
             "name_confidence": name_info["confidence"],
         })
+
+    _emit("indexing", total, total)
 
     recognitions: list[Recognition | None] = [None] * len(files)
     if recognize is not None:
@@ -428,6 +442,9 @@ def _index_folder(
             # skips them. Only wired when the backend supports `on_result` and a
             # cache is available; the per-file metadata (rel_path/mtime) needed
             # for the cache row is looked up by the probe's path.
+            n_recognize = len(to_recognize_idx)
+            _emit("recognizing", 0, n_recognize)
+            recognized_count = [0]
             on_result = None
             can_checkpoint = (
                 con is not None and library_name is not None
@@ -439,6 +456,8 @@ def _index_folder(
                     for i in to_recognize_idx
                 }
                 def on_result(probe: "FileProbe", recognition: "Recognition | None") -> None:
+                    recognized_count[0] += 1
+                    _emit("recognizing", recognized_count[0], n_recognize)
                     if recognition is None:
                         return
                     rel_mtime = probe_meta.get(probe.path)
@@ -460,6 +479,7 @@ def _index_folder(
             fresh = recognizer.recognize(probes, **kwargs)
             for i, recognition in zip(to_recognize_idx, fresh):
                 recognitions[i] = recognition
+            _emit("recognizing", n_recognize, n_recognize)
 
         if con is not None and library_name is not None:
             cache_entries = []
@@ -600,8 +620,11 @@ def guess_category(file_path: Path) -> str:
 
 def add(
     name: str, path: str, *, tags: list[str] | None = None, analyze: bool = False,
-    recognize: str | None = None,
+    recognize: str | None = None, progress=None,
 ) -> dict[str, Any]:
+    """``progress``, if given, is called as ``progress(phase, done, total)`` as
+    the folder is indexed (phases: ``scanning`` / ``indexing`` / ``recognizing``)
+    so a UI can show a real progress bar over a long import."""
     if not (name or "").strip():
         raise BadInputError("library name is required (cannot be empty)")
     name = name.strip()
@@ -613,7 +636,7 @@ def add(
     now = time.time()
 
     with _conn() as con:
-        indexed = _index_folder(folder, analyze=analyze, recognize=recognize, con=con, library_name=name)
+        indexed = _index_folder(folder, analyze=analyze, recognize=recognize, con=con, library_name=name, progress=progress)
         con.execute(
             """
             INSERT INTO libraries (name, path, tags, file_count, last_scanned)
@@ -639,6 +662,100 @@ def remove(name: str) -> dict[str, Any]:
         # its rows explicitly so a removed library leaves no orphaned verdicts.
         con.execute("DELETE FROM recognition_cache WHERE library_name = ?", (name,))
     return {"removed": name}
+
+
+def rename(name: str, new_name: str) -> dict[str, Any]:
+    """Rename a registered library, cascading to its files + recognition cache."""
+    new_name = (new_name or "").strip()
+    if not new_name:
+        raise BadInputError("new library name is required (cannot be empty)")
+    with _conn() as con:
+        _require_library(con, name)
+        if new_name != name and con.execute(
+            "SELECT 1 FROM libraries WHERE name = ?", (new_name,)
+        ).fetchone() is not None:
+            raise BadInputError(f"library '{new_name}' already exists")
+        # Defer FK checks to commit so renaming the parent before repointing its
+        # children (files/recognition_cache) doesn't trip the constraint mid-update.
+        con.execute("PRAGMA defer_foreign_keys = ON")
+        con.execute("UPDATE libraries SET name = ? WHERE name = ?", (new_name, name))
+        con.execute("UPDATE files SET library_name = ? WHERE library_name = ?", (new_name, name))
+        con.execute(
+            "UPDATE recognition_cache SET library_name = ? WHERE library_name = ?",
+            (new_name, name),
+        )
+        row = con.execute("SELECT * FROM libraries WHERE name = ?", (new_name,)).fetchone()
+        return _row_to_summary(row)
+
+
+def set_tags(name: str, tags: list[str]) -> dict[str, Any]:
+    """Replace a library's tag list (does not re-index its files)."""
+    tag_str = ",".join(t.strip() for t in (tags or []) if t.strip())
+    with _conn() as con:
+        _require_library(con, name)
+        con.execute("UPDATE libraries SET tags = ? WHERE name = ?", (tag_str, name))
+        row = con.execute("SELECT * FROM libraries WHERE name = ?", (name,)).fetchone()
+        return _row_to_summary(row)
+
+
+# Per-file fields the UI may edit by hand; their *_source is stamped "manual"
+# so a later re-scan's heuristics don't silently look like the user's choice.
+_EDITABLE_FILE_FIELDS = {"category", "kind", "bpm"}
+
+
+def update_file(library: str, rel_path: str, **fields: Any) -> dict[str, Any]:
+    """Hand-edit a single indexed file's ``category`` / ``kind`` / ``bpm``."""
+    edits = {k: v for k, v in fields.items() if k in _EDITABLE_FILE_FIELDS and v is not None}
+    if not edits:
+        raise BadInputError(
+            f"nothing to update (editable: {sorted(_EDITABLE_FILE_FIELDS)})"
+        )
+    if "bpm" in edits:
+        try:
+            edits["bpm"] = float(edits["bpm"])
+        except (TypeError, ValueError):
+            raise BadInputError(f"bpm must be a number, got {edits['bpm']!r}")
+    with _conn() as con:
+        _require_library(con, library)
+        row = con.execute(
+            "SELECT * FROM files WHERE library_name = ? AND rel_path = ?", (library, rel_path)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"sample '{library}/{rel_path}' not found")
+        sets, params = [], []
+        for col, val in edits.items():
+            sets.append(f"{col} = ?")
+            params.append(val)
+            if f"{col}_source" in row.keys():
+                sets.append(f"{col}_source = ?")
+                params.append("manual")
+        params += [library, rel_path]
+        con.execute(
+            f"UPDATE files SET {', '.join(sets)} WHERE library_name = ? AND rel_path = ?",
+            params,
+        )
+        updated = con.execute(
+            "SELECT * FROM files WHERE library_name = ? AND rel_path = ?", (library, rel_path)
+        ).fetchone()
+        return _file_row_to_summary(library, updated)
+
+
+def remove_file(library: str, rel_path: str) -> dict[str, Any]:
+    """Drop a single indexed file from the catalog (the file on disk is left
+    untouched). Keeps the library's ``file_count`` in sync."""
+    with _conn() as con:
+        _require_library(con, library)
+        cur = con.execute(
+            "DELETE FROM files WHERE library_name = ? AND rel_path = ?", (library, rel_path)
+        )
+        if cur.rowcount == 0:
+            raise NotFoundError(f"sample '{library}/{rel_path}' not found")
+        con.execute(
+            "UPDATE libraries SET file_count = "
+            "(SELECT COUNT(*) FROM files WHERE library_name = ?) WHERE name = ?",
+            (library, library),
+        )
+    return {"removed": f"{library}/{rel_path}"}
 
 
 def list_entries() -> dict[str, Any]:

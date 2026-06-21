@@ -584,3 +584,71 @@ def test_migration_adds_recognition_columns_to_existing_db(lib_config, tmp_path,
     library.scan("drum-pack")
     files = library.show("drum-pack")["files"]
     assert len(files) == 3
+
+
+class TestLibraryManagement:
+    """Rename / set_tags / per-file update + remove, and the import progress hook."""
+
+    def test_rename_cascades_to_files(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder))
+        library.rename("drum-pack", "kit-a")
+        names = {l["name"] for l in library.list_entries()["libraries"]}
+        assert names == {"kit-a"}
+        # Files moved with the library (searchable under the new name).
+        refs = [m["ref"] for m in library.search(None, library="kit-a")["matches"]]
+        assert refs and all(r.startswith("kit-a/") for r in refs)
+
+    def test_rename_rejects_existing_target(self, lib_config, sample_folder):
+        library.add("a", str(sample_folder))
+        library.add("b", str(sample_folder))
+        with pytest.raises(BadInputError):
+            library.rename("a", "b")
+
+    def test_rename_missing_raises(self, lib_config):
+        with pytest.raises(NotFoundError):
+            library.rename("nope", "x")
+
+    def test_set_tags_replaces(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder), tags=["old"])
+        out = library.set_tags("drum-pack", ["lofi", "drums"])
+        assert out["tags"] == ["lofi", "drums"]
+
+    def test_update_file_stamps_manual_source(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder))
+        ref = library.search(None, library="drum-pack")["matches"][0]["ref"]
+        rel = ref.split("/", 1)[1]
+        out = library.update_file("drum-pack", rel, category="clap", bpm=88, kind="loop")
+        assert out["category"] == "clap" and out["bpm"] == 88.0 and out["kind"] == "loop"
+        assert out["category_source"] == "manual"
+
+    def test_update_file_rejects_bad_bpm(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder))
+        rel = library.search(None, library="drum-pack")["matches"][0]["ref"].split("/", 1)[1]
+        with pytest.raises(BadInputError):
+            library.update_file("drum-pack", rel, bpm="fast")
+
+    def test_update_file_missing_raises(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder))
+        with pytest.raises(NotFoundError):
+            library.update_file("drum-pack", "nope/x.wav", category="kick")
+
+    def test_remove_file_decrements_count(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder))
+        before = library.show("drum-pack")["file_count"]
+        rel = library.search(None, library="drum-pack")["matches"][0]["ref"].split("/", 1)[1]
+        library.remove_file("drum-pack", rel)
+        assert library.show("drum-pack")["file_count"] == before - 1
+
+    def test_remove_file_missing_raises(self, lib_config, sample_folder):
+        library.add("drum-pack", str(sample_folder))
+        with pytest.raises(NotFoundError):
+            library.remove_file("drum-pack", "nope/x.wav")
+
+    def test_add_reports_progress(self, lib_config, sample_folder):
+        seen = []
+        library.add("drum-pack", str(sample_folder), progress=lambda p, d, t: seen.append((p, d, t)))
+        phases = {p for p, _, _ in seen}
+        assert "indexing" in phases
+        # The final indexing tick reaches the file total.
+        idx = [(d, t) for p, d, t in seen if p == "indexing"]
+        assert idx and idx[-1][0] == idx[-1][1] == 3
