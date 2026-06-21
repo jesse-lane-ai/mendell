@@ -509,6 +509,69 @@ def clip_midi_content(project_dir: Path, track: str, clip: str) -> dict[str, Any
     }
 
 
+def save_clip_midi(
+    project_dir: Path, track: str, clip: str, notes: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Rewrite a MIDI clip's source ``.mid`` from an editor note list and
+    re-import it so ``length_frame`` and the stored note list reflect the edit.
+
+    ``notes`` is a list of ``{pitch, start_beat, length_beats, velocity}`` in
+    musical (beat) units. They are converted to ticks at the clip's PPQ and
+    written to the clip's existing source path (or a fresh ``midi/<clip>.mid``
+    if the source is missing) via ``mido``, then re-imported through the normal
+    ``clips.import_clip`` path. Clip params (e.g. ``loop``) are preserved.
+    """
+    import mido
+
+    project_dir = Path(project_dir)
+    data = clips_mod._get_for_track(project_dir, track, clip)
+    clip_meta = data.get("clip", {})
+    if clip_meta.get("type") != "midi":
+        raise BadInputError(f"clip '{clip}' is not a MIDI clip")
+
+    ppq = int(clip_meta.get("ppq") or midi_gen_mod.PATTERN_PPQ)
+    # Preserve params (loop, etc.) across the re-import that resets them.
+    prev_params = dict(data.get("params", {}) or {})
+
+    # Build (abs_tick, kind, note, velocity) events; kind 1=on, 0=off.
+    events: list[tuple[int, int, int, int]] = []
+    for n in notes or []:
+        pitch = int(n.get("pitch", 60))
+        if not (0 <= pitch <= 127):
+            raise BadInputError(f"note pitch out of range (0-127): {pitch}")
+        start_beat = float(n.get("start_beat", 0.0) or 0.0)
+        length_beats = float(n.get("length_beats", 0.0) or 0.0)
+        velocity = max(1, min(127, int(n.get("velocity", 100))))
+        start_tick = max(0, round(start_beat * ppq))
+        end_tick = max(round((start_beat + length_beats) * ppq), start_tick + 1)
+        events.append((start_tick, 1, pitch, velocity))
+        events.append((end_tick, 0, pitch, 0))
+    events.sort(key=lambda e: (e[0], e[1]))  # note_off before note_on at same tick
+
+    mid = mido.MidiFile(ticks_per_beat=ppq)
+    mtrack = mido.MidiTrack()
+    mid.tracks.append(mtrack)
+    last_tick = 0
+    for abs_tick, kind, note, velocity in events:
+        msg_type = "note_on" if kind == 1 else "note_off"
+        mtrack.append(mido.Message(
+            msg_type, note=note, velocity=velocity, time=abs_tick - last_tick))
+        last_tick = abs_tick
+
+    source = clip_meta.get("source")
+    out_path = Path(source) if source else (project_dir / "midi" / f"{clip}.mid")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    mid.save(str(out_path))
+
+    result = clips_mod.import_clip(
+        project_dir, track, clip, midi_path=str(out_path),
+        midi_track_index=int(clip_meta.get("midi_track") or 0),
+    )
+    if prev_params:
+        clips_mod.set_params(project_dir, track, clip, **prev_params)
+    return {**result, "saved_notes": len(notes or []), "source": str(out_path)}
+
+
 def clip_audio_peaks(
     project_dir: Path, track: str, clip: str, *, buckets: int = 800
 ) -> dict[str, Any]:
