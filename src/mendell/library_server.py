@@ -214,6 +214,24 @@ class _Handler(BaseHTTPRequestHandler):
                     raise MendellError("path is required", code=1)
                 data = arrange_view_mod.view(Path(proj_path).expanduser())
                 self._send_json({"ok": True, "data": data})
+            elif path == "/api/clip/midi":
+                proj_path = query.get("path", [None])[0]
+                track = query.get("track", [None])[0]
+                clip = query.get("clip", [None])[0]
+                if not (proj_path and track and clip):
+                    raise MendellError("path, track and clip are required", code=1)
+                data = arrange_view_mod.clip_midi_content(
+                    Path(proj_path).expanduser(), track, clip)
+                self._send_json({"ok": True, "data": data})
+            elif path == "/api/clip/audio-peaks":
+                proj_path = query.get("path", [None])[0]
+                track = query.get("track", [None])[0]
+                clip = query.get("clip", [None])[0]
+                if not (proj_path and track and clip):
+                    raise MendellError("path, track and clip are required", code=1)
+                data = arrange_view_mod.clip_audio_peaks(
+                    Path(proj_path).expanduser(), track, clip)
+                self._send_json({"ok": True, "data": data})
             elif path == "/api/midilib/list":
                 category = query.get("category", [None])[0] or None
                 self._send_json({"ok": True, "data": midi_catalog_mod.list_clips(category=category)})
@@ -429,6 +447,29 @@ class _Handler(BaseHTTPRequestHandler):
                     Path(payload["path"]).expanduser(), payload["track"], int(payload["bar"]),
                 )
                 self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/move-clip":
+                data = arrange_view_mod.move_clip(
+                    Path(payload["path"]).expanduser(), payload["track"],
+                    int(payload["from_bar"]), int(payload["to_bar"]),
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/clip/audio-params":
+                # Editor-phase save: persist audio-clip params via clips.set_params.
+                fields = {k: payload[k] for k in
+                          ("gain", "pitch", "loop", "loop_start", "loop_end",
+                           "native_bpm", "warp")
+                          if payload.get(k) is not None}
+                data = arrange_view_mod.set_clip_audio_params(
+                    Path(payload["path"]).expanduser(), payload["track"],
+                    payload["clip"], **fields,
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/clip/midi":
+                # Editor-phase save: stubbed until the MIDI editor lands.
+                raise MendellError(
+                    "saving MIDI clip edits is not yet implemented (editor phase)",
+                    code=1,
+                )
             elif parsed.path == "/api/arrange/add-kit":
                 data = arrange_view_mod.add_kit_to_track(
                     Path(payload["path"]).expanduser(), payload["track"],
@@ -1695,57 +1736,135 @@ async function loadArrangeView() {
     document.getElementById("arrGrid").innerHTML = '<p style="color:#ff6b6b">Error: ' + esc(e.message) + '</p>';
   }
 }
-// Block sequencer: rows = tracks, columns = bar slots. Each square pad is a clip
-// block — filled pads carry a clip (audio/midi), empty pads are click-to-add.
-const ARR_COLOURS = ["#3b5bdb","#2f9e44","#c2410c","#7c3aed","#0e7490","#b45309"];
-const ARR_PAD = 36;
+// DAW-style timeline: rows = tracks; clip blocks are absolutely-positioned divs
+// whose WIDTH = length_bars × ARR_PXBAR and LEFT = (start_bar-1) × ARR_PXBAR.
+// Each block carries its own server-derived colour. Blocks are drag-and-drop:
+// dragging snaps to the nearest bar and POSTs /api/arrange/move-clip (rejecting
+// overlaps). Empty track space is click-to-drop (arrFillBlock, mapped to bar).
+const ARR_PXBAR = 56;       // pixels per bar
+const ARR_LABELW = 140;     // track-label gutter width
+const ARR_ROWH = 40;        // track row height
+// Editor-phase hook: a later phase implements the per-block MIDI/audio editor
+// here. For now it just selects the block. Signature is fixed by the contract.
+function openClipEditor(trackIndex, startBar) {
+  selectClip(trackIndex, startBar);
+}
 function renderArrangeGrid(snap) {
   document.getElementById("arrMeta").textContent =
     snap.bpm + " BPM · " + snap.time_sig + " · " + snap.total_bars +
-    " bars · click an empty pad to drop a clip block, a block to select it";
+    " bars · click empty space to drop a block, drag a block to move it";
   const totalBars = snap.total_bars || 32;
   const tracks = snap.tracks || [];
-  let html = '<div style="display:grid;grid-template-columns:140px repeat(' + totalBars +
-    ',' + ARR_PAD + 'px);gap:3px;font-size:10px;align-items:center;min-width:' + (140 + totalBars * (ARR_PAD + 3)) + 'px">';
-  html += '<div class="muted" style="padding:4px 6px">Track</div>';
+  const laneW = totalBars * ARR_PXBAR;
+  let html = '<div style="min-width:' + (ARR_LABELW + laneW) + 'px;font-size:11px">';
+
+  // Bar-number ruler
+  html += '<div style="display:flex;align-items:flex-end;height:20px">' +
+    '<div class="muted" style="width:' + ARR_LABELW + 'px;flex:0 0 ' + ARR_LABELW + 'px;padding:0 6px">Track</div>' +
+    '<div style="position:relative;width:' + laneW + 'px;height:100%">';
   for (let b = 1; b <= totalBars; b++)
-    html += '<div class="muted" style="text-align:center">' + b + '</div>';
+    html += '<div class="muted" style="position:absolute;left:' + ((b - 1) * ARR_PXBAR) +
+      'px;bottom:0;font-size:9px;border-left:1px solid #2a2e35;padding-left:2px;height:8px">' + b + '</div>';
+  html += '</div></div>';
+
   tracks.forEach((track, ti) => {
-    const colour = ARR_COLOURS[ti % ARR_COLOURS.length];
-    const barMap = {};
-    (track.placements || []).forEach(p => {
-      for (let b = p.start_bar; b < p.start_bar + p.length_bars && b <= totalBars; b++)
-        barMap[b] = { clip: p.clip, start: p.start_bar, len: p.length_bars };
-    });
     const badge = ({midi:"M",audio:"A",sampler:"S"})[track.type] || "?";
     const trkSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar == null) ? ";box-shadow:0 0 0 2px #fff inset" : "";
+    html += '<div style="display:flex;align-items:stretch;margin-top:4px">';
+    // Track label
     html += '<div onclick="selectTrack(' + ti + ')" title="select track" ' +
-      'style="cursor:pointer;height:' + ARR_PAD + 'px;padding:0 6px;background:#1d2026;border-radius:5px;display:flex;align-items:center;gap:5px;overflow:hidden' + trkSel + '">' +
-      '<span style="background:' + colour + ';color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
-      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="' + esc(track.name) + '">' + esc(track.name) + '</span></div>';
-    for (let b = 1; b <= totalBars; b++) {
-      const cell = barMap[b];
-      if (cell) {
-        const isStart = (b === cell.start);
-        const isEnd = (b === cell.start + cell.len - 1) || (b === totalBars);
-        const lr = isStart ? "6px" : "0", rr = isEnd ? "6px" : "0";
-        const sel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === cell.start) ? ";box-shadow:0 0 0 2px #fff inset" : "";
-        html += '<div onclick="selectClip(' + ti + ',' + cell.start + ')" title="' + esc(cell.clip) + '" ' +
-          'style="cursor:pointer;height:' + ARR_PAD + 'px;background:' + colour + ';border-radius:' + lr + ' ' + rr + ' ' + rr + ' ' + lr +
-          ';display:flex;align-items:center;justify-content:center;color:#fff;overflow:hidden' + sel + '">' +
-          (isStart ? '<span style="font-size:9px;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-            esc(cell.clip) + (cell.len > 1 ? ' &times;' + cell.len : '') + '</span>' : '') +
-          '</div>';
-      } else {
-        html += '<div onclick="arrFillBlock(' + ti + ',' + b + ')" title="add a clip block at bar ' + b + '" ' +
-          'style="cursor:pointer;height:' + ARR_PAD + 'px;background:#15171b;border:1px solid #2a2e35;border-radius:6px"' +
-          ' onmouseover="this.style.background=\'#222733\'" onmouseout="this.style.background=\'#15171b\'"></div>';
-      }
-    }
+      'style="cursor:pointer;width:' + ARR_LABELW + 'px;flex:0 0 ' + ARR_LABELW + 'px;height:' + ARR_ROWH +
+      'px;padding:0 6px;background:#1d2026;border-radius:5px;display:flex;align-items:center;gap:5px;overflow:hidden' + trkSel + '">' +
+      '<span style="background:#3b5bdb;color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(track.name) + '">' + esc(track.name) + '</span></div>';
+    // Lane: bar gridlines + click-to-drop, plus absolutely-positioned blocks.
+    html += '<div class="arr-lane" data-ti="' + ti + '" ' +
+      'onclick="arrLaneClick(event,' + ti + ')" ' +
+      'ondragover="arrDragOver(event,' + ti + ')" ondrop="arrDrop(event,' + ti + ')" ' +
+      'style="position:relative;width:' + laneW + 'px;height:' + ARR_ROWH +
+      'px;background:#15171b;border:1px solid #2a2e35;border-radius:6px;overflow:hidden">';
+    for (let b = 2; b <= totalBars; b++)
+      html += '<div style="position:absolute;left:' + ((b - 1) * ARR_PXBAR) +
+        'px;top:0;bottom:0;border-left:1px solid #20242b"></div>';
+    (track.placements || []).forEach(p => {
+      const draggable = (track.type === "midi" || track.type === "audio");
+      const left = (p.start_bar - 1) * ARR_PXBAR;
+      const width = Math.max(p.length_bars * ARR_PXBAR - 2, 18);
+      const sel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === p.start_bar) ? ";box-shadow:0 0 0 2px #fff inset" : "";
+      html += '<div class="arr-block" ' +
+        (draggable ? 'draggable="true" ondragstart="arrDragStart(event,' + ti + ',' + p.start_bar + ')" ' : '') +
+        'onclick="event.stopPropagation();selectClip(' + ti + ',' + p.start_bar + ')" ' +
+        'ondblclick="event.stopPropagation();openClipEditor(' + ti + ',' + p.start_bar + ')" ' +
+        'title="' + esc(p.clip) + ' (' + p.length_bars + ' bar' + (p.length_bars > 1 ? 's' : '') + ', ' + esc(p.clip_type || track.type) + ')" ' +
+        'style="position:absolute;left:' + left + 'px;top:2px;width:' + width + 'px;height:' + (ARR_ROWH - 4) +
+        'px;background:' + (p.color || '#3b5bdb') + ';border-radius:4px;cursor:grab;display:flex;align-items:center;' +
+        'color:#fff;overflow:hidden' + sel + '">' +
+        '<span style="font-size:9px;padding:0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.clip) + '</span></div>';
+    });
+    html += '</div></div>';
   });
-  if (!tracks.length) html += '<div style="grid-column:1/-1;color:#8b93a1;padding:20px;text-align:center">No tracks yet — use the random fill buttons in the toolbar.</div>';
+  if (!tracks.length) html += '<div style="color:#8b93a1;padding:20px;text-align:center">No tracks yet — use the random fill buttons in the toolbar.</div>';
   html += "</div>";
   document.getElementById("arrGrid").innerHTML = html;
+}
+
+// Map an x-offset within a lane to a 1-indexed bar (snap-to-bar).
+function arrBarFromEvent(ev, ti) {
+  const lane = ev.currentTarget.closest(".arr-lane") || ev.currentTarget;
+  const rect = lane.getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  return Math.max(1, Math.floor(x / ARR_PXBAR) + 1);
+}
+// Click empty lane space → drop a new block at that bar (skip if on a block).
+function arrLaneClick(ev, ti) {
+  if (ev.target.closest(".arr-block")) return;
+  arrFillBlock(ti, arrBarFromEvent(ev, ti));
+}
+// ---- drag-and-drop block move -------------------------------------------
+let _arrDrag = null;   // {ti, fromBar}
+function arrDragStart(ev, ti, fromBar) {
+  _arrDrag = { ti, fromBar };
+  ev.dataTransfer.effectAllowed = "move";
+  try { ev.dataTransfer.setData("text/plain", String(fromBar)); } catch (e) {}
+}
+// Does a [start, start+len-1] span overlap any *other* block on the track?
+function arrWouldOverlap(track, fromBar, toBar, len) {
+  const start = toBar, end = toBar + len - 1;
+  return (track.placements || []).some(p => {
+    if (p.start_bar === fromBar) return false;
+    const oEnd = p.start_bar + p.length_bars - 1;
+    return start <= oEnd && p.start_bar <= end;
+  });
+}
+function arrDragOver(ev, ti) {
+  if (!_arrDrag || _arrDrag.ti !== ti) return;   // same-track moves only
+  const t = _arrTrack(ti); if (!t) return;
+  const toBar = arrBarFromEvent(ev, ti);
+  const moving = (t.placements || []).find(p => p.start_bar === _arrDrag.fromBar);
+  const len = moving ? moving.length_bars : 1;
+  if (!arrWouldOverlap(t, _arrDrag.fromBar, toBar, len)) {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+  }
+}
+async function arrDrop(ev, ti) {
+  if (!_arrDrag || _arrDrag.ti !== ti) { _arrDrag = null; return; }
+  ev.preventDefault();
+  const t = _arrTrack(ti);
+  const drag = _arrDrag; _arrDrag = null;
+  if (!t) return;
+  const toBar = arrBarFromEvent(ev, ti);
+  if (toBar === drag.fromBar) return;
+  const moving = (t.placements || []).find(p => p.start_bar === drag.fromBar);
+  const len = moving ? moving.length_bars : 1;
+  if (arrWouldOverlap(t, drag.fromBar, toBar, len)) { _arrSelStatus("Move would overlap another block.", true); return; }
+  _arrSelStatus("Moving block…");
+  try {
+    await api("/api/arrange/move-clip", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: t.name, from_bar: drag.fromBar, to_bar: toBar }) });
+    if (_arrSel && _arrSel.track === t.name && _arrSel.bar === drag.fromBar) _arrSel.bar = toBar;
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
 }
 
 // Click an empty pad → drop a clip block (random clip of the track's type).
