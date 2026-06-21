@@ -117,12 +117,13 @@ def export_bundle(
 
     Returns a manifest dict (same as the ``manifest.json`` written into the zip).
     """
-    out_path = Path(out_path)
+    out_path = _resolve_export_path(out_path, ".zip")
     include_set = _parse_include(include)
 
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "path": str(out_path),
         "include": sorted(include_set),
         "samples": [],
         "kits": [],
@@ -580,13 +581,30 @@ def _remap_slot_path(
 # same sample paths. Built on SQLite's online-backup API so the snapshot is
 # consistent even with WAL writers in flight.
 
+_DEFAULT_EXPORT_STEM = "mendell-library"
+
+
+def _resolve_export_path(out_path: str | Path, suffix: str) -> Path:
+    """Turn a user-supplied output path into a concrete file path.
+
+    If ``out_path`` names an existing directory (or ends with a path separator),
+    write a default-named file *inside* it rather than turning the folder name
+    into a file — this is what the UI's folder-picker hands us. Otherwise ensure
+    the path carries the expected ``suffix`` (e.g. ``.db`` / ``.zip``)."""
+    raw = str(out_path)
+    out = Path(raw).expanduser()
+    if out.is_dir() or raw.endswith(("/", os.sep)):
+        out = out / f"{_DEFAULT_EXPORT_STEM}{suffix}"
+    elif out.suffix.lower() != suffix:
+        out = out.with_suffix(suffix)
+    return out
+
+
 def export_db(out_path: str | Path) -> dict[str, Any]:
     """Write a consistent snapshot of the whole library DB to ``out_path``."""
     from . import library as library_mod
 
-    out = Path(out_path).expanduser()
-    if out.suffix.lower() != ".db":
-        out = out.with_suffix(".db")
+    out = _resolve_export_path(out_path, ".db")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     src_path = library_mod.db_path()

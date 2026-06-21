@@ -303,3 +303,29 @@ class TestDbBackupRestore:
         junk.write_bytes(b"not a sqlite db at all")
         with pytest.raises(Exception):
             bundle_mod.import_db(junk, overwrite=True)
+
+
+class TestExportPathResolution:
+    """Output-path handling — a folder target writes a default-named file inside
+    it rather than turning the folder name into a file (the Downloads.db bug)."""
+
+    def test_db_export_into_directory(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("x", str(src_sample_folder))
+        dest = tmp_path / "downloads"
+        dest.mkdir()
+        r = bundle_mod.export_db(dest)
+        assert Path(r["path"]).parent == dest
+        assert Path(r["path"]).name == "mendell-library.db"
+
+    def test_db_export_explicit_filename_kept(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("x", str(src_sample_folder))
+        r = bundle_mod.export_db(tmp_path / "mine.db")
+        assert Path(r["path"]).name == "mine.db"
+
+    def test_bundle_export_into_directory(self, src_config, src_sample_folder, tmp_path):
+        library_mod.add("x", str(src_sample_folder))
+        dest = tmp_path / "out"
+        dest.mkdir()
+        r = bundle_mod.export_bundle(dest, include=["samples"])
+        assert Path(r["path"]).parent == dest
+        assert Path(r["path"]).name == "mendell-library.zip"

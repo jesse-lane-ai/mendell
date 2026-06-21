@@ -959,7 +959,7 @@ _PAGE = r"""<!DOCTYPE html>
   </select>
   <small style="opacity:.7">DB backup is small and fast; restore it on a machine that shares the same sample paths. A bundle is self-contained and portable anywhere.</small>
   <label style="margin-top:12px">Output path (on this machine)</label>
-  <span style="display:flex;gap:4px"><input id="expOut" placeholder="/home/you/mendell-library.db" style="flex:1"><button type="button" title="browse for a folder, then add a filename" onclick="browseFor('expOut','dir')">📁</button></span>
+  <span style="display:flex;gap:4px"><input id="expOut" placeholder="/home/you/mendell-library.db" style="flex:1"><button type="button" title="browse for a destination folder" onclick="browseFor('expOut','dir', '', document.getElementById('expMode').value==='db' ? '.db' : '.zip')">📁</button></span>
   <div id="expIncludeRow" style="display:none;margin-top:10px">
     <label>Bundle contents</label>
     <span style="display:flex;gap:14px;flex-wrap:wrap">
@@ -1402,7 +1402,7 @@ async function doExport() {
       alert("Exported DB backup to " + r.path + " (" + r.bytes + " bytes).");
     } else {
       const n = (r.samples||[]).length + (r.kits||[]).length + (r.projects||[]).length + (r.midi||[]).length;
-      alert("Exported bundle to " + out + " (" + n + " items).");
+      alert("Exported bundle to " + (r.path || out) + " (" + n + " items).");
     }
   } catch(e) { alert(e.message); }
 }
@@ -1425,15 +1425,19 @@ async function doImport() {
 // All paths in this UI are on the machine running the server, so the native
 // browser file picker can't help — this modal lists the server filesystem via
 // /api/fs/list and writes the chosen path back into the target input.
-let _browseTarget = null, _browseMode = "dir", _browseExts = "", _browseCwd = "";
+let _browseTarget = null, _browseMode = "dir", _browseExts = "", _browseCwd = "", _browseSuffix = "";
 document.getElementById("browseList").addEventListener("click", (e) => {
   const row = e.target.closest(".brow");
   if (!row || !row.dataset.path) return;
   if (row.dataset.kind === "file") browsePickFile(row.dataset.path);
   else browseLoad(row.dataset.path);
 });
-function browseFor(inputId, mode, exts) {
+// `saveSuffix` (e.g. ".db"/".zip") marks a "choose folder for a NEW file" use:
+// picking a folder appends a default filename so we never turn the folder name
+// itself into the file (the /home/you/Downloads.db bug).
+function browseFor(inputId, mode, exts, saveSuffix) {
   _browseTarget = inputId; _browseMode = mode || "dir"; _browseExts = exts || "";
+  _browseSuffix = saveSuffix || "";
   document.getElementById("browseTitle").textContent =
     _browseMode === "file" ? "Choose a file" : "Choose a folder";
   document.getElementById("browsePick").style.display =
@@ -1468,7 +1472,11 @@ function browseUp() {
   browseLoad(parent);
 }
 function browseChoose() {
-  if (_browseTarget) document.getElementById(_browseTarget).value = _browseCwd;
+  if (_browseTarget) {
+    let v = _browseCwd;
+    if (_browseSuffix) v = v.replace(/\/+$/,"") + "/mendell-library" + _browseSuffix;
+    document.getElementById(_browseTarget).value = v;
+  }
   browseDlg.close();
 }
 function browsePickFile(p) {
