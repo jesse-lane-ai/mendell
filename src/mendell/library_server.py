@@ -118,6 +118,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "random32_patterns": beat_random32.available_patterns(),
                     "keys": list(beat_random32.KEYS),
                 }})
+            elif path == "/api/fs/list":
+                self._send_json({"ok": True, "data": self._fs_list(query)})
             elif path == "/api/search":
                 self._send_json({"ok": True, "data": self._do_search(query)})
             elif path == "/api/audio":
@@ -454,6 +456,47 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     # -- endpoints --------------------------------------------------------
+    def _fs_list(self, q: dict) -> dict:
+        """Browse the server's filesystem for the UI's folder/file pickers.
+
+        ``path`` is the directory to list (defaults to the user's home);
+        ``exts`` is an optional comma-separated allow-list of file extensions
+        (in file-pick mode the UI passes e.g. ``.wav,.mp3``). Directories are
+        always returned; files only when ``exts`` includes their suffix (or
+        ``exts`` is empty, meaning any file)."""
+        raw = (q.get("path", [None])[0] or "").strip()
+        base = Path(raw).expanduser() if raw else Path.home()
+        try:
+            base = base.resolve()
+        except OSError:
+            base = Path.home()
+        if not base.is_dir():
+            base = base.parent if base.parent.is_dir() else Path.home()
+
+        exts_raw = (q.get("exts", [None])[0] or "").strip().lower()
+        exts = {e if e.startswith(".") else "." + e
+                for e in (s.strip() for s in exts_raw.split(",")) if e}
+
+        dirs: list[dict] = []
+        files: list[dict] = []
+        try:
+            for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:
+                    continue
+                if is_dir:
+                    dirs.append({"name": entry.name, "path": str(entry)})
+                elif not exts or entry.suffix.lower() in exts:
+                    files.append({"name": entry.name, "path": str(entry)})
+        except PermissionError:
+            pass
+
+        parent = str(base.parent) if base.parent != base else None
+        return {"path": str(base), "parent": parent, "dirs": dirs, "files": files}
+
     def _do_search(self, q: dict) -> dict:
         def one(key):
             v = q.get(key, [None])[0]
@@ -610,6 +653,8 @@ _PAGE = r"""<!DOCTYPE html>
   dialog label { display: block; margin: 10px 0 4px; color: #aab3c2; }
   dialog input { width: 100%; }
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .brow { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #2a2a2a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .brow:hover { background: #2a2a2a; }
 </style>
 </head>
 <body>
@@ -807,7 +852,7 @@ _PAGE = r"""<!DOCTYPE html>
 <dialog id="addDlg">
   <h3>Register a sample folder</h3>
   <label>Name</label><span style="display:flex;gap:4px"><input id="addName" placeholder="blank = random" style="flex:1"><button type="button" title="random name" onclick="slugInto('addName')">🎲</button></span>
-  <label>Folder path</label><input id="addPath" placeholder="/home/you/samples/drums">
+  <label>Folder path</label><span style="display:flex;gap:4px"><input id="addPath" placeholder="/home/you/samples/drums" style="flex:1"><button type="button" title="browse" onclick="browseFor('addPath','dir')">📁</button></span>
   <label>Tags (comma-separated)</label><input id="addTags" placeholder="drums,lofi">
   <label>Sound recognition</label>
   <select id="addRecognize" style="width:100%" onchange="onRecognizeChange()"></select>
@@ -838,7 +883,7 @@ _PAGE = r"""<!DOCTYPE html>
   </select>
   <small style="opacity:.7">DB backup is small and fast; restore it on a machine that shares the same sample paths. A bundle is self-contained and portable anywhere.</small>
   <label style="margin-top:12px">Output path (on this machine)</label>
-  <input id="expOut" placeholder="/home/you/mendell-library.db">
+  <span style="display:flex;gap:4px"><input id="expOut" placeholder="/home/you/mendell-library.db" style="flex:1"><button type="button" title="browse for a folder, then add a filename" onclick="browseFor('expOut','dir')">📁</button></span>
   <div id="expIncludeRow" style="display:none;margin-top:10px">
     <label>Bundle contents</label>
     <span style="display:flex;gap:14px;flex-wrap:wrap">
@@ -862,10 +907,10 @@ _PAGE = r"""<!DOCTYPE html>
     <option value="bundle">Portable bundle (.zip) — extracts audio + registers it</option>
   </select>
   <label style="margin-top:12px">Source path (on this machine)</label>
-  <input id="impSrc" placeholder="/home/you/mendell-library.db">
+  <span style="display:flex;gap:4px"><input id="impSrc" placeholder="/home/you/mendell-library.db" style="flex:1"><button type="button" title="browse" onclick="browseFor('impSrc','file', document.getElementById('impMode').value==='db' ? '.db' : '.zip')">📁</button></span>
   <div id="impDestRow" style="display:none;margin-top:10px">
     <label>Extract bundle into</label>
-    <input id="impDest" placeholder="blank = folder next to the .zip">
+    <span style="display:flex;gap:4px"><input id="impDest" placeholder="blank = folder next to the .zip" style="flex:1"><button type="button" title="browse" onclick="browseFor('impDest','dir')">📁</button></span>
   </div>
   <label id="impOverwriteRow" style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
     <input type="checkbox" id="impOverwrite" style="width:auto"> Overwrite the existing library DB
@@ -873,6 +918,20 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="row">
     <button onclick="importDlg.close()">Cancel</button>
     <button class="primary" onclick="doImport()">Import</button>
+  </div>
+</dialog>
+
+<dialog id="browseDlg" style="width:560px;max-width:90vw">
+  <h3 id="browseTitle">Choose a folder</h3>
+  <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+    <button type="button" onclick="browseUp()" title="up one level">⬆</button>
+    <input id="browseCwd" style="flex:1" onkeydown="if(event.key==='Enter')browseLoad(this.value)">
+    <button type="button" onclick="browseLoad(document.getElementById('browseCwd').value)">Go</button>
+  </div>
+  <div id="browseList" style="max-height:50vh;overflow:auto;border:1px solid #333;border-radius:6px"></div>
+  <div class="row">
+    <button onclick="browseDlg.close()">Cancel</button>
+    <button id="browsePick" class="primary" onclick="browseChoose()">Select this folder</button>
   </div>
 </dialog>
 
@@ -1133,6 +1192,55 @@ async function doImport() {
     loadLibs(); search();
     alert("Import complete.");
   } catch(e) { alert(e.message); }
+}
+
+// ---- Server-side file/folder browser ------------------------------------
+// All paths in this UI are on the machine running the server, so the native
+// browser file picker can't help — this modal lists the server filesystem via
+// /api/fs/list and writes the chosen path back into the target input.
+let _browseTarget = null, _browseMode = "dir", _browseExts = "", _browseCwd = "";
+function browseFor(inputId, mode, exts) {
+  _browseTarget = inputId; _browseMode = mode || "dir"; _browseExts = exts || "";
+  document.getElementById("browseTitle").textContent =
+    _browseMode === "file" ? "Choose a file" : "Choose a folder";
+  document.getElementById("browsePick").style.display =
+    _browseMode === "file" ? "none" : "";
+  browseDlg.showModal();
+  const cur = document.getElementById(inputId).value.trim();
+  browseLoad(cur || "");
+}
+async function browseLoad(path) {
+  try {
+    const q = new URLSearchParams();
+    if (path) q.set("path", path);
+    if (_browseMode === "file" && _browseExts) q.set("exts", _browseExts);
+    const d = await api("/api/fs/list?" + q.toString());
+    _browseCwd = d.path;
+    document.getElementById("browseCwd").value = d.path;
+    let h = "";
+    for (const dir of d.dirs)
+      h += '<div class="brow" onclick="browseLoad(' + JSON.stringify(dir.path) +
+           ')">📁 ' + esc(dir.name) + '</div>';
+    if (_browseMode === "file")
+      for (const f of d.files)
+        h += '<div class="brow" onclick="browsePickFile(' + JSON.stringify(f.path) +
+             ')">🎵 ' + esc(f.name) + '</div>';
+    document.getElementById("browseList").innerHTML =
+      h || '<div style="padding:10px;opacity:.6">empty</div>';
+  } catch(e) { alert(e.message); }
+}
+function browseUp() {
+  const cwd = document.getElementById("browseCwd").value;
+  const parent = cwd.replace(/\/+$/,"").replace(/\/[^/]*$/, "") || "/";
+  browseLoad(parent);
+}
+function browseChoose() {
+  if (_browseTarget) document.getElementById(_browseTarget).value = _browseCwd;
+  browseDlg.close();
+}
+function browsePickFile(p) {
+  if (_browseTarget) document.getElementById(_browseTarget).value = p;
+  browseDlg.close();
 }
 
 // ---- Projects tab -------------------------------------------------------
