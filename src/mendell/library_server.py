@@ -1534,7 +1534,18 @@ async function doImport() {
     const body = { mode, src };
     if (mode === "db") body.overwrite = document.getElementById("impOverwrite").checked;
     else body.dest = document.getElementById("impDest").value.trim();
-    await api("/api/library/import", { method:"POST", body: JSON.stringify(body) });
+    try {
+      await api("/api/library/import", { method:"POST", body: JSON.stringify(body) });
+    } catch(e) {
+      // A DB import replaces the whole catalog; rather than dead-end on the
+      // "pass overwrite" guard, confirm and retry with overwrite set.
+      if (mode === "db" && !body.overwrite && /already exists/.test(e.message)) {
+        if (!confirm("This will replace your current library catalog with the imported one. Continue?")) return;
+        body.overwrite = true;
+        document.getElementById("impOverwrite").checked = true;
+        await api("/api/library/import", { method:"POST", body: JSON.stringify(body) });
+      } else { throw e; }
+    }
     importDlg.close();
     loadLibs(); search();
     alert("Import complete.");
