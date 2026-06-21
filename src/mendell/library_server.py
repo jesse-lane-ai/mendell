@@ -284,6 +284,13 @@ class _Handler(BaseHTTPRequestHandler):
                     seed=int(payload["seed"]) if payload.get("seed") not in (None, "") else None,
                 )
                 self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/kits/randomize-all":
+                data = kits_mod.randomize_all(
+                    payload["kit"],
+                    library=payload.get("library") or None,
+                    seed=int(payload["seed"]) if payload.get("seed") not in (None, "") else None,
+                )
+                self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/kits/set-slot":
                 data = kits_mod.add_slot(
                     payload["kit"], payload["note"], payload["path"],
@@ -754,6 +761,7 @@ _PAGE = r"""<!DOCTYPE html>
       <span id="kitDetailTitle" style="font-weight:600"></span>
       <label class="muted" style="margin-left:auto;font-size:12px">Random from
         <input id="kitPadLib" placeholder="any library" style="width:130px"></label>
+      <button onclick="kitRandomizeAll()" title="Fill all 16 pads with random one-shots">🎲 Randomize all</button>
       <button onclick="document.getElementById('kitDetail').style.display='none'">Close</button>
     </div>
     <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
@@ -1826,6 +1834,21 @@ async function kitPadRandom(note) {
       body: JSON.stringify({ kit: _selectedKit, note, library: document.getElementById("kitPadLib").value.trim() || null }) });
     await showKit(encodeURIComponent(_selectedKit));
     kitPadPlay(note);
+  } catch (e) { st.textContent = e.message; }
+}
+
+async function kitRandomizeAll() {
+  if (!_selectedKit) return;
+  const st = document.getElementById("kitStatus");
+  st.textContent = "Randomizing all 16 pads…";
+  try {
+    const r = await api("/api/kits/randomize-all", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kit: _selectedKit, library: document.getElementById("kitPadLib").value.trim() || null }) });
+    await showKit(encodeURIComponent(_selectedKit));
+    const d = r.data || {};
+    let msg = "Filled " + (d.filled_count || 0) + " of 16 pads";
+    if (d.failures && d.failures.length) msg += " (" + d.failures.length + " failed)";
+    st.textContent = msg;
   } catch (e) { st.textContent = e.message; }
 }
 

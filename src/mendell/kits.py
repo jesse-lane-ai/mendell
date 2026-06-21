@@ -351,6 +351,38 @@ def random_slot(
     )
 
 
+def randomize_all(
+    kit_name: str,
+    *,
+    library: str | None = None,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Fill (or replace) all 16 GM drum pads (notes 36..51) with random
+    library one-shots, reusing the per-pad selection logic in
+    :func:`random_slot`.
+
+    If *seed* is given, each pad is seeded deterministically (``seed + note``)
+    so results are reproducible while pads still differ. Individual pad
+    failures are collected rather than aborting the whole operation.
+    """
+    create(kit_name)  # ensure kit exists
+    filled: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for note in range(36, 52):
+        pad_seed = None if seed is None else seed + note
+        try:
+            random_slot(kit_name, note, library=library, seed=pad_seed)
+            filled.append({"gm_note": note, "category": _category_for_note(note)})
+        except (BadInputError, NotFoundError) as exc:
+            failures.append({"gm_note": note, "error": str(exc)})
+    return {
+        **show(kit_name),
+        "filled": filled,
+        "filled_count": len(filled),
+        "failures": failures,
+    }
+
+
 def apply_to_project(
     kit_name: str,
     project_dir: Path,
