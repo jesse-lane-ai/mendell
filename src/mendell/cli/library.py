@@ -137,3 +137,58 @@ def remove(name):
     """Unregister NAME (the folder and its files on disk are left untouched)."""
     data = library_mod.remove(name)
     return data, data
+
+
+@library.command("export")
+@click.argument("out_zip")
+@click.option(
+    "--include",
+    type=str,
+    default=None,
+    help="Comma-separated list of content types to bundle: samples,kits,projects,midi "
+         "(default: all four).",
+)
+@json_option
+@command
+def export_bundle_cmd(out_zip, include):
+    """Export the library (samples, kits, projects, MIDI) to a zip bundle at OUT_ZIP.
+
+    The bundle contains a manifest.json plus the actual files, all at relative
+    paths.  Import on another machine with `mendell library import <bundle.zip>`.
+    """
+    from .. import library_bundle as bundle_mod
+    include_list = [s.strip() for s in include.split(",")] if include else None
+    data = bundle_mod.export_bundle(out_zip, include=include_list)
+    return data, data
+
+
+@library.command("import")
+@click.argument("bundle_zip")
+@click.option(
+    "--dest",
+    type=str,
+    default=None,
+    help="Directory to extract bundle files into (default: alongside the zip, "
+         "in a folder named after the zip without its extension).",
+)
+@json_option
+@command
+def import_bundle_cmd(bundle_zip, dest):
+    """Import a zip bundle created by `mendell library export`.
+
+    Extracts sample files, kits, project directories, and MIDI clips into DEST,
+    then registers them in the local library DB (create-or-update; idempotent).
+    Returns counts of added/updated/skipped items per content type.
+    """
+    from pathlib import Path
+
+    from .. import library_bundle as bundle_mod
+    from ..errors import BadInputError
+
+    zip_path = Path(bundle_zip)
+    if not zip_path.is_file():
+        raise BadInputError(f"bundle not found: {bundle_zip}")
+
+    dest_dir = Path(dest) if dest else zip_path.parent / zip_path.stem
+    data = bundle_mod.import_bundle(zip_path, dest_dir)
+    return data, data

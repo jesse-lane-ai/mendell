@@ -958,6 +958,88 @@ mendell export <project> --dry-run --json
 
 ---
 
+### Library Bundles (import/export)
+
+Bundle the full sample library, named kits, registered projects, and MIDI clips into a single portable zip file, then restore it on another machine — or back it up locally.
+
+```
+mendell library export <out.zip> [--include <types>] [--json]
+mendell library import <bundle.zip> [--dest <dir>] [--json]
+```
+
+#### `mendell library export <out.zip>`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--include` | `samples,kits,projects,midi` | Comma-separated list of content types to bundle |
+| `--json` | off | Emit a JSON envelope |
+
+Writes a zip to `<out.zip>` containing:
+
+- `manifest.json` — schema version, creation timestamp, counts, and per-item metadata
+- `samples/<library-name>/<rel-path>` — audio files for each registered library
+- `projects/<project-name>/…` — full project directory tree for each registered project
+- `midi/<name>.mid` — every MIDI clip in the catalog
+- Kit metadata is stored in `manifest.json` (no audio files are duplicated; kit slots reference the bundled sample paths)
+
+The manifest carries all file-level metadata (category, kind, BPM, duration, instruments, caption) so import can rebuild DB rows without re-running audio analysis.
+
+Valid `--include` values: `samples`, `kits`, `projects`, `midi` (case-insensitive).
+
+**Returns** (with `--json`):
+```json
+{
+  "ok": true,
+  "data": {
+    "schema_version": "1",
+    "created_at": "2026-06-20T12:34:56+00:00",
+    "include": ["kits", "midi", "projects", "samples"],
+    "samples": [ /* per-library metadata */ ],
+    "kits": [ /* per-kit metadata */ ],
+    "projects": [ /* per-project metadata */ ],
+    "midi": [ /* per-clip metadata */ ],
+    "counts": {
+      "samples_libraries": 2,
+      "samples_files": 150,
+      "kits": 3,
+      "projects": 1,
+      "midi": 4
+    }
+  }
+}
+```
+
+#### `mendell library import <bundle.zip>`
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dest <dir>` | `<zip-stem>/` (sibling of the zip) | Directory to extract files into |
+| `--json` | off | Emit a JSON envelope |
+
+Extracts all files from `<bundle.zip>` into `<dest>`, then registers samples, kits, and MIDI clips in the local library DB. All writes are idempotent (create-or-update) — safe to run multiple times.
+
+- **Samples**: each library is re-registered pointing to `<dest>/samples/<library-name>/`. File-level metadata is restored from the manifest (no re-analysis needed).
+- **Kits**: kit rows and slots are created-or-updated. Slot `source_path` values are automatically remapped to the extracted sample location when the original path is unavailable.
+- **Projects**: extracted under `<dest>/projects/<project-name>/` but not re-registered in the project registry (run `mendell projects sync <dest>/projects/<name>` to index them).
+- **MIDI**: clips are extracted and registered in the MIDI catalog (create-or-update).
+
+**Returns** (with `--json`):
+```json
+{
+  "ok": true,
+  "data": {
+    "samples": {"added": 2, "updated": 0, "skipped": 0},
+    "kits":    {"added": 3, "updated": 0, "skipped": 0},
+    "projects":{"added": 1, "skipped": 0},
+    "midi":    {"added": 4, "updated": 0, "skipped": 0}
+  }
+}
+```
+
+Exit codes follow the standard convention: `0` success, `1` bad input (file not found, invalid zip, unknown include type), `3` engine error.
+
+---
+
 ## Time-Stretching
 
 Each audio clip owns its own warp settings — mode, native BPM, pitch shift, and warp markers. Two clips on the same track can have different warp modes. The clip stores the file's native BPM (auto-detected on import, overridable) and the engine stretches to the project BPM at export time.
