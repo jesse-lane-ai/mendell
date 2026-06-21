@@ -769,7 +769,8 @@ _PAGE = r"""<!DOCTYPE html>
           <button onclick="kitPadRandom(_selPad)">🎲 Random</button>
           <button onclick="kitPadClear(_selPad)">✕ Clear</button>
         </div>
-        <input id="kpSetPath" placeholder="library ref or /path/to/sample.wav" style="width:100%;margin-bottom:6px">
+        <button class="primary" style="width:100%;margin-bottom:8px" onclick="openKitPicker()">🔎 Browse library…</button>
+        <input id="kpSetPath" placeholder="or paste a library ref / path" style="width:100%;margin-bottom:6px">
         <button onclick="kitPadSet(_selPad)">Set sample</button>
         <div id="kpStatus" class="muted" style="font-size:11px;margin-top:6px"></div>
       </div>
@@ -932,6 +933,21 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="row">
     <button onclick="browseDlg.close()">Cancel</button>
     <button id="browsePick" class="primary" onclick="browseChoose()">Select this folder</button>
+  </div>
+</dialog>
+
+<dialog id="kitPickDlg" style="width:640px;max-width:92vw">
+  <h3 style="margin-top:0">Pick a sample <span id="kpkNote" class="muted" style="font-size:13px;font-weight:400"></span></h3>
+  <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+    <input id="kpkQuery" placeholder="search filename…" style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter')kitPickSearch()">
+    <input id="kpkCat" placeholder="category" style="width:120px" onkeydown="if(event.key==='Enter')kitPickSearch()">
+    <input id="kpkLib" placeholder="library (optional)" style="width:130px" onkeydown="if(event.key==='Enter')kitPickSearch()">
+    <button class="primary" onclick="kitPickSearch()">Search</button>
+  </div>
+  <div id="kpkStatus" class="muted" style="font-size:12px;margin-bottom:6px"></div>
+  <div id="kpkList" style="max-height:52vh;overflow:auto;border:1px solid #333;border-radius:6px"></div>
+  <div class="row">
+    <button onclick="kitPickClose()">Cancel</button>
   </div>
 </dialog>
 
@@ -1832,6 +1848,86 @@ async function kitPadSet(note) {
     kitPadPlay(note);
   } catch (e) { document.getElementById("kpStatus").textContent = e.message; }
 }
+
+// ---- Visual sample picker (browse the library, audition, assign) ---------
+let _kpkAudio = null;     // currently-auditioning preview
+let _kpkBtn = null;       // its play button, for ▶/⏸ toggle
+
+function openKitPicker() {
+  if (_selPad == null) { alert("Select a pad first"); return; }
+  document.getElementById("kpkNote").textContent =
+    "→ note " + _selPad + " (" + (PAD_CAT[_selPad] || "") + ")";
+  document.getElementById("kpkQuery").value = "";
+  document.getElementById("kpkCat").value = PAD_CAT[_selPad] || "";
+  document.getElementById("kpkLib").value = document.getElementById("kitPadLib").value.trim();
+  document.getElementById("kpkList").innerHTML = "";
+  document.getElementById("kitPickDlg").showModal();
+  kitPickSearch();
+}
+
+function kitPickStopAudio() {
+  if (_kpkAudio) { _kpkAudio.pause(); _kpkAudio = null; }
+  if (_kpkBtn) { _kpkBtn.textContent = "▶"; _kpkBtn = null; }
+}
+
+function kitPickClose() {
+  kitPickStopAudio();
+  document.getElementById("kitPickDlg").close();
+}
+
+async function kitPickSearch() {
+  const status = document.getElementById("kpkStatus");
+  const p = new URLSearchParams();
+  const q = document.getElementById("kpkQuery").value.trim();
+  const cat = document.getElementById("kpkCat").value.trim();
+  const lib = document.getElementById("kpkLib").value.trim();
+  if (q) p.set("query", q);
+  if (cat) p.set("category", cat);
+  if (lib) p.set("library", lib);
+  status.textContent = "Searching…";
+  try {
+    const data = await api("/api/search?" + p.toString());
+    const matches = data.matches || [];
+    status.textContent = matches.length + " sample" + (matches.length === 1 ? "" : "s");
+    const list = document.getElementById("kpkList");
+    if (!matches.length) { list.innerHTML = '<div class="muted" style="padding:10px">No matches.</div>'; return; }
+    list.innerHTML = matches.map(m => {
+      const ref = m.ref;
+      const meta = [m.category, m.kind, (m.bpm ? m.bpm + " bpm" : "")].filter(Boolean).join(" · ");
+      return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #222">' +
+        '<button class="kpkPlay" data-ref="' + esc(ref) + '" onclick="kitPickAudition(this)" style="width:32px">▶</button>' +
+        '<div style="flex:1;min-width:0">' +
+        '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(ref) + '</div>' +
+        '<div class="muted" style="font-size:11px">' + esc(meta) + '</div></div>' +
+        '<button class="primary" onclick="kitPickSelect(\'' + esc(ref).replace(/'/g, "\\'") + '\')">Select</button>' +
+        '</div>';
+    }).join("");
+  } catch (e) { status.textContent = e.message; }
+}
+
+function kitPickAudition(btn) {
+  const ref = btn.getAttribute("data-ref");
+  // toggle off if this row is already playing
+  if (_kpkBtn === btn) { kitPickStopAudio(); return; }
+  kitPickStopAudio();
+  _kpkAudio = new Audio("/api/audio?ref=" + encodeURIComponent(ref) + "&t=" + Date.now());
+  _kpkBtn = btn;
+  btn.textContent = "⏸";
+  _kpkAudio.onended = () => { if (_kpkBtn === btn) { btn.textContent = "▶"; _kpkBtn = null; _kpkAudio = null; } };
+  _kpkAudio.play().catch(() => { btn.textContent = "▶"; _kpkBtn = null; _kpkAudio = null; });
+}
+
+async function kitPickSelect(ref) {
+  const note = _selPad;
+  try {
+    await api("/api/kits/set-slot", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kit: _selectedKit, note, path: ref }) });
+    kitPickClose();
+    await showKit(encodeURIComponent(_selectedKit));
+    kitPadPlay(note);
+  } catch (e) { document.getElementById("kpkStatus").textContent = e.message; }
+}
+
 async function kitCreate() {
   const name = nameOrSlug("kitCreateName");
   try {
