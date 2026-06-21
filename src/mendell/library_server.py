@@ -465,11 +465,12 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/clip/midi":
-                # Editor-phase save: stubbed until the MIDI editor lands.
-                raise MendellError(
-                    "saving MIDI clip edits is not yet implemented (editor phase)",
-                    code=1,
+                # Editor-phase save: rewrite the clip's .mid from the note list.
+                data = arrange_view_mod.save_clip_midi(
+                    Path(payload["path"]).expanduser(), payload["track"],
+                    payload["clip"], payload.get("notes") or [],
                 )
+                self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/arrange/add-kit":
                 data = arrange_view_mod.add_kit_to_track(
                     Path(payload["path"]).expanduser(), payload["track"],
@@ -1129,6 +1130,31 @@ _PAGE = r"""<!DOCTYPE html>
   </div>
 </dialog>
 
+<dialog id="midiEditor" style="width:auto;max-width:95vw">
+  <h3 id="meTitle">Piano roll</h3>
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;font-size:12px">
+    <span class="muted" id="meMeta"></span>
+    <label style="display:flex;align-items:center;gap:4px;margin:0;color:#aab3c2">Snap
+      <select id="meSnap" style="width:auto;margin:0">
+        <option value="1">1/4 (beat)</option>
+        <option value="0.5">1/8</option>
+        <option value="0.25" selected>1/16</option>
+        <option value="0.125">1/32</option>
+      </select>
+    </label>
+    <span class="muted" style="font-size:11px">click empty grid = add · drag = move · drag right edge = resize · select + Delete = remove</span>
+  </div>
+  <div id="mePane" style="display:flex;border:1px solid #2a2e35;border-radius:6px;overflow:auto;max-height:60vh;max-width:90vw">
+    <canvas id="meKeys" style="display:block;background:#15171b"></canvas>
+    <canvas id="meGrid" style="display:block;background:#15171b;cursor:crosshair"></canvas>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <span id="meStatus" class="muted" style="flex:1;font-size:12px"></span>
+    <button onclick="meClose()">Cancel</button>
+    <button class="primary" onclick="meSave()">Save</button>
+  </div>
+</dialog>
+
 <audio id="player"></audio>
 <script>
 let activeLib = "";
@@ -1744,11 +1770,202 @@ async function loadArrangeView() {
 const ARR_PXBAR = 56;       // pixels per bar
 const ARR_LABELW = 140;     // track-label gutter width
 const ARR_ROWH = 40;        // track row height
-// Editor-phase hook: a later phase implements the per-block MIDI/audio editor
-// here. For now it just selects the block. Signature is fixed by the contract.
+// Per-block editor hook (double-click). MIDI clips open the piano-roll editor;
+// audio clips are handled by a separate effort and left untouched here.
 function openClipEditor(trackIndex, startBar) {
   selectClip(trackIndex, startBar);
+  const t = _arrTrack(trackIndex); if (!t) return;
+  const p = (t.placements || []).find(x => x.start_bar === startBar);
+  if (!p || (p.clip_type || t.type) !== "midi") return;  // guard: MIDI only
+  openMidiEditor(t.name, p.clip);
 }
+
+// ===== MIDI piano-roll editor ============================================
+// Pitch range C2..C6 (inclusive) drawn top=high. Geometry constants:
+const ME_LOW = 36, ME_HIGH = 84;       // MIDI note numbers (C2..C6)
+const ME_ROWH = 14;                    // px per semitone row
+const ME_KEYW = 44;                    // left keyboard gutter width
+const ME_PXBEAT = 40;                  // px per beat
+const ME_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+let _meState = null;  // {track, clip, bpm, bpb, lengthBars, beats, notes:[{pitch,start_beat,length_beats,velocity}], sel}
+let _meDrag = null;   // {mode:'move'|'resize'|'new', idx, ...}
+
+function meNoteName(p) { return ME_NAMES[((p % 12) + 12) % 12] + (Math.floor(p / 12) - 1); }
+function meSnap() { return parseFloat(document.getElementById("meSnap").value) || 0.25; }
+function meRows() { return ME_HIGH - ME_LOW + 1; }
+function mePitchToY(p) { return (ME_HIGH - p) * ME_ROWH; }
+function meYToPitch(y) { return ME_HIGH - Math.floor(y / ME_ROWH); }
+
+async function openMidiEditor(track, clip) {
+  try {
+    const d = await api("/api/clip/midi?path=" + encodeURIComponent(_arrProjectPath) +
+      "&track=" + encodeURIComponent(track) + "&clip=" + encodeURIComponent(clip));
+    const bpb = d.beats_per_bar || 4;
+    const lengthBars = Math.max(1, d.length_bars || 1);
+    _meState = {
+      track, clip, bpm: d.bpm, bpb, lengthBars,
+      beats: lengthBars * bpb,
+      notes: (d.notes || []).map(n => ({
+        pitch: n.pitch, start_beat: n.start_beat,
+        length_beats: n.length_beats || meSnap(), velocity: n.velocity || 100,
+      })),
+      sel: -1,
+    };
+    document.getElementById("meTitle").textContent = "Piano roll — " + clip;
+    document.getElementById("meMeta").textContent =
+      d.bpm + " BPM · " + lengthBars + " bar" + (lengthBars > 1 ? "s" : "") + " · " + bpb + "/bar";
+    document.getElementById("meStatus").textContent = "";
+    meSizeCanvases();
+    meRender();
+    document.getElementById("midiEditor").showModal();
+  } catch (e) { _arrSelStatus(e.message, true); }
+}
+function meClose() { document.getElementById("midiEditor").close(); _meState = null; _meDrag = null; }
+
+function meSizeCanvases() {
+  const s = _meState;
+  const h = meRows() * ME_ROWH, w = s.beats * ME_PXBEAT;
+  const keys = document.getElementById("meKeys");
+  keys.width = ME_KEYW; keys.height = h;
+  const grid = document.getElementById("meGrid");
+  grid.width = w; grid.height = h;
+}
+function meRender() {
+  const s = _meState; if (!s) return;
+  // --- keyboard gutter ---
+  const kc = document.getElementById("meKeys").getContext("2d");
+  const h = meRows() * ME_ROWH;
+  kc.clearRect(0, 0, ME_KEYW, h);
+  for (let p = ME_LOW; p <= ME_HIGH; p++) {
+    const y = mePitchToY(p), black = ME_NAMES[((p % 12) + 12) % 12].includes("#");
+    kc.fillStyle = black ? "#1b1e24" : "#2a2e35";
+    kc.fillRect(0, y, ME_KEYW, ME_ROWH);
+    kc.strokeStyle = "#15171b"; kc.strokeRect(0, y, ME_KEYW, ME_ROWH);
+    if (p % 12 === 0) { kc.fillStyle = "#aab3c2"; kc.font = "9px sans-serif";
+      kc.fillText(meNoteName(p), 4, y + ME_ROWH - 3); }
+  }
+  // --- grid ---
+  const g = document.getElementById("meGrid").getContext("2d");
+  const w = s.beats * ME_PXBEAT;
+  g.clearRect(0, 0, w, h);
+  // pitch row backgrounds (highlight C rows + black keys subtly)
+  for (let p = ME_LOW; p <= ME_HIGH; p++) {
+    const y = mePitchToY(p), black = ME_NAMES[((p % 12) + 12) % 12].includes("#");
+    g.fillStyle = black ? "#181a20" : "#15171b";
+    g.fillRect(0, y, w, ME_ROWH);
+    g.strokeStyle = "#202028"; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+  }
+  // beat + bar gridlines
+  for (let b = 0; b <= s.beats; b++) {
+    const x = b * ME_PXBEAT, bar = (b % s.bpb === 0);
+    g.strokeStyle = bar ? "#3a4150" : "#23262e";
+    g.lineWidth = bar ? 1.5 : 1;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+  }
+  g.lineWidth = 1;
+  // notes
+  s.notes.forEach((n, i) => {
+    const x = n.start_beat * ME_PXBEAT, y = mePitchToY(n.pitch);
+    const ww = Math.max(n.length_beats * ME_PXBEAT, 4);
+    g.fillStyle = (i === s.sel) ? "#ffd166" : "#3b5bdb";
+    g.fillRect(x, y + 1, ww, ME_ROWH - 2);
+    g.strokeStyle = "#0d0f12"; g.strokeRect(x + 0.5, y + 1.5, ww - 1, ME_ROWH - 3);
+    g.fillStyle = "rgba(255,255,255,.5)"; g.fillRect(x + ww - 3, y + 1, 3, ME_ROWH - 2); // resize handle
+  });
+}
+// hit-test: returns {idx, edge:bool} or null
+function meHit(bx, by) {
+  const s = _meState;
+  for (let i = s.notes.length - 1; i >= 0; i--) {
+    const n = s.notes[i], x = n.start_beat * ME_PXBEAT, y = mePitchToY(n.pitch);
+    const ww = Math.max(n.length_beats * ME_PXBEAT, 4);
+    if (bx >= x && bx <= x + ww && by >= y && by <= y + ME_ROWH)
+      return { idx: i, edge: bx >= x + ww - 5 };
+  }
+  return null;
+}
+function meEvtXY(ev) {
+  const r = document.getElementById("meGrid").getBoundingClientRect();
+  return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+}
+function meSnapBeat(beat) {
+  const sn = meSnap();
+  return Math.max(0, Math.round(beat / sn) * sn);
+}
+function meGridDown(ev) {
+  const s = _meState; if (!s) return;
+  const { x, y } = meEvtXY(ev);
+  const hit = meHit(x, y);
+  if (hit) {
+    s.sel = hit.idx;
+    const n = s.notes[hit.idx];
+    if (hit.edge) {
+      _meDrag = { mode: "resize", idx: hit.idx };
+    } else {
+      _meDrag = { mode: "move", idx: hit.idx, offBeat: x / ME_PXBEAT - n.start_beat };
+    }
+    meRender();
+    return;
+  }
+  // empty grid → add note
+  const pitch = Math.max(ME_LOW, Math.min(ME_HIGH, meYToPitch(y)));
+  const start = meSnapBeat(x / ME_PXBEAT);
+  const len = meSnap();
+  s.notes.push({ pitch, start_beat: start, length_beats: len, velocity: 100 });
+  s.sel = s.notes.length - 1;
+  _meDrag = { mode: "move", idx: s.sel, offBeat: 0 };
+  meRender();
+}
+function meGridMove(ev) {
+  const s = _meState; if (!s) return;
+  const { x, y } = meEvtXY(ev);
+  if (!_meDrag) {
+    const hit = meHit(x, y);
+    document.getElementById("meGrid").style.cursor =
+      hit ? (hit.edge ? "ew-resize" : "move") : "crosshair";
+    return;
+  }
+  const n = s.notes[_meDrag.idx]; if (!n) return;
+  if (_meDrag.mode === "resize") {
+    const end = meSnapBeat(x / ME_PXBEAT);
+    n.length_beats = Math.max(meSnap(), end - n.start_beat);
+  } else {
+    n.start_beat = meSnapBeat(x / ME_PXBEAT - _meDrag.offBeat);
+    n.pitch = Math.max(ME_LOW, Math.min(ME_HIGH, meYToPitch(y)));
+  }
+  meRender();
+}
+function meGridUp() { _meDrag = null; }
+function meKeyDown(ev) {
+  if (!document.getElementById("midiEditor").open) return;
+  if ((ev.key === "Delete" || ev.key === "Backspace") && _meState && _meState.sel >= 0) {
+    ev.preventDefault();
+    _meState.notes.splice(_meState.sel, 1);
+    _meState.sel = -1;
+    meRender();
+  }
+}
+async function meSave() {
+  const s = _meState; if (!s) return;
+  document.getElementById("meStatus").textContent = "Saving…";
+  try {
+    await api("/api/clip/midi", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, track: s.track, clip: s.clip,
+        notes: s.notes.map(n => ({ pitch: n.pitch, start_beat: n.start_beat,
+          length_beats: n.length_beats, velocity: n.velocity })) }) });
+    meClose();
+    await loadArrangeView();
+  } catch (e) { document.getElementById("meStatus").textContent = e.message; }
+}
+// wire grid canvas + global key handler once the DOM is ready
+(function meInit() {
+  const grid = document.getElementById("meGrid");
+  if (!grid) return;
+  grid.addEventListener("mousedown", meGridDown);
+  window.addEventListener("mousemove", meGridMove);
+  window.addEventListener("mouseup", meGridUp);
+  window.addEventListener("keydown", meKeyDown);
+})();
 function renderArrangeGrid(snap) {
   document.getElementById("arrMeta").textContent =
     snap.bpm + " BPM · " + snap.time_sig + " · " + snap.total_bars +
