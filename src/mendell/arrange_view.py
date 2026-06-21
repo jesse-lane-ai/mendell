@@ -12,6 +12,7 @@ this module works standalone when they haven't been committed yet.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random as _random
 from pathlib import Path
@@ -22,6 +23,58 @@ from . import clips as clips_mod
 from . import midi_gen as midi_gen_mod
 from . import project as project_mod
 from . import tracks as tracks_mod
+from .errors import BadInputError, NotFoundError
+from .timing import frames_per_bar
+
+
+def _clip_color(clip_name: str) -> str:
+    """Stable hex colour derived from a hash of the clip name.
+
+    Same clip name always yields the same colour. We clamp each channel into a
+    mid-bright band so white block text stays legible on the result.
+    """
+    digest = hashlib.md5(clip_name.encode("utf-8")).digest()
+    r = 70 + digest[0] % 130
+    g = 70 + digest[1] % 130
+    b = 70 + digest[2] % 130
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _clip_length_bars(project_dir: Path, clip_name: str, tp: dict[str, Any]) -> tuple[int, str]:
+    """Compute a clip's TRUE rendered length in bars (ceil, min 1) and its type.
+
+    MIDI clips use ``length_frame`` directly. Audio clips convert
+    ``length_seconds`` to bars at the project BPM, accounting for warp: a warped
+    clip is time-stretched from its ``native_bpm`` to the project BPM, so its
+    rendered duration scales by ``native_bpm / project_bpm``.
+    """
+    try:
+        data = clips_mod.load(project_dir, clip_name)
+    except Exception:
+        return 1, "unknown"
+
+    clip = data.get("clip", {})
+    ctype = clip.get("type", "unknown")
+    bpm = tp["bpm"]
+    sr = tp["sample_rate"]
+    bpb = tp["beats_per_bar"]
+    fpb = frames_per_bar(bpm, sr, bpb)
+
+    if ctype == "midi":
+        length_frame = float(data.get("length_frame", 0) or 0)
+        bars = math.ceil(length_frame / fpb) if fpb > 0 else 1
+        return max(1, bars), ctype
+
+    # audio
+    length_seconds = float(data.get("length_seconds", 0.0) or 0.0)
+    native_bpm = float(clip.get("native_bpm") or bpm)
+    warp = clip.get("warp")
+    rendered_seconds = length_seconds
+    if warp and warp != "off" and native_bpm > 0:
+        rendered_seconds = length_seconds * (native_bpm / bpm)
+    seconds_per_bar = (60.0 / bpm) * bpb if bpm > 0 else 0.0
+    bars = math.ceil(rendered_seconds / seconds_per_bar) if seconds_per_bar > 0 else 1
+    return max(1, bars), ctype
 
 
 def _ensure_track(project_dir: Path, name: str, track_type: str) -> None:
@@ -52,7 +105,8 @@ def view(project_dir: Path) -> dict[str, Any]:
                     "name": "drums",
                     "type": "midi",
                     "placements": [
-                        {"clip": "drum-loop", "start_bar": 1, "length_bars": 32}
+                        {"clip": "drum-loop", "start_bar": 1, "length_bars": 4,
+                         "clip_type": "midi", "color": "#3b5bdb"}
                     ]
                 },
                 ...
@@ -67,38 +121,47 @@ def view(project_dir: Path) -> dict[str, Any]:
     arr_settings = {**arrangement_mod.ARRANGEMENT_DEFAULTS, **arr_data.get("arrangement", {})}
     placements = arr_data.get("clips", [])
 
-    # Total bars: use explicit length if set, else derive from placements.
-    total_bars_raw = arr_settings.get("length", 0.0)
-    if total_bars_raw:
-        total_bars = int(math.ceil(float(total_bars_raw)))
-    elif placements:
-        # last placement bar — we don't track end bar, so just report max start+1
-        total_bars = max(p["bar"] for p in placements) + 7  # rough estimate
-    else:
-        total_bars = 8  # default
-
     # Build per-track placement maps
     by_track: dict[str, list[dict]] = {}
     for p in placements:
         by_track.setdefault(p["track"], []).append(p)
 
+    # Total bars: use explicit length if set, else derive from where the last
+    # block (start + its TRUE length) actually ends, with a little headroom.
+    total_bars_raw = arr_settings.get("length", 0.0)
+    if total_bars_raw:
+        total_bars = int(math.ceil(float(total_bars_raw)))
+    elif placements:
+        last_end = 1
+        for p in placements:
+            length_bars, _ = _clip_length_bars(project_dir, p["clip"], tp)
+            last_end = max(last_end, p["bar"] + length_bars - 1)
+        total_bars = last_end + 4  # headroom for dropping new blocks
+    else:
+        total_bars = 8  # default
+
     track_rows = []
     for t in tracks_mod.list_tracks(project_dir):
         name = t["name"]
-        track_placements = by_track.get(name, [])
+        track_placements = sorted(by_track.get(name, []), key=lambda x: x["bar"])
         grid_placements = []
-        for p in sorted(track_placements, key=lambda x: x["bar"]):
-            # Estimate length_bars: distance to next placement on same track,
-            # or to arrangement end, capped at total_bars.
-            others = [q["bar"] for q in track_placements if q["bar"] > p["bar"]]
-            if others:
-                length_bars = min(others) - p["bar"]
+        for idx, p in enumerate(track_placements):
+            # TRUE length from the clip's real content (no gap-to-next estimate).
+            true_len, ctype = _clip_length_bars(project_dir, p["clip"], tp)
+            # Enforce NO OVERLAP: clamp the rendered length so this block ends
+            # at-or-before the next block's start on the same track.
+            if idx + 1 < len(track_placements):
+                next_start = track_placements[idx + 1]["bar"]
+                max_len = max(1, next_start - p["bar"])
+                length_bars = min(true_len, max_len)
             else:
-                length_bars = max(1, total_bars - p["bar"] + 1)
+                length_bars = true_len
             grid_placements.append({
                 "clip": p["clip"],
                 "start_bar": p["bar"],
                 "length_bars": length_bars,
+                "clip_type": ctype,
+                "color": _clip_color(p["clip"]),
             })
         track_rows.append({
             "name": name,
@@ -358,6 +421,143 @@ def replace_clip(
 def remove_clip(project_dir: Path, track: str, bar: int) -> dict[str, Any]:
     """Remove the placement at ``(track, bar)`` from the arrangement."""
     return arrangement_mod.remove(Path(project_dir), track, int(bar))
+
+
+def move_clip(project_dir: Path, track: str, from_bar: int, to_bar: int) -> dict[str, Any]:
+    """Move the placement at ``(track, from_bar)`` to ``to_bar`` (snap-to-bar).
+
+    Rejects the move when it would overlap another block on the same track:
+    the moved block occupies ``[to_bar, to_bar + length - 1]`` and must not
+    intersect any other placement's occupied span. Returns the updated
+    placement record.
+    """
+    project_dir = Path(project_dir)
+    from_bar = int(from_bar)
+    to_bar = int(to_bar)
+    if to_bar < 1:
+        raise BadInputError(f"to_bar must be >= 1, got {to_bar}")
+
+    arr = arrangement_mod.load(project_dir)
+    placements = arr.get("clips", [])
+    moving = next(
+        (p for p in placements if p["track"] == track and p["bar"] == from_bar), None
+    )
+    if moving is None:
+        raise NotFoundError(f"no clip placed on track '{track}' at bar {from_bar}")
+
+    if to_bar == from_bar:
+        return {"track": track, "clip": moving["clip"], "bar": from_bar, "moved": False}
+
+    tp = project_mod.timing_params(project_dir)
+    moved_len, _ = _clip_length_bars(project_dir, moving["clip"], tp)
+    moved_start, moved_end = to_bar, to_bar + moved_len - 1
+
+    for p in placements:
+        if p["track"] != track or p["bar"] == from_bar:
+            continue
+        other_len, _ = _clip_length_bars(project_dir, p["clip"], tp)
+        other_start, other_end = p["bar"], p["bar"] + other_len - 1
+        if moved_start <= other_end and other_start <= moved_end:
+            raise BadInputError(
+                f"cannot move '{moving['clip']}' to bar {to_bar}: it would overlap "
+                f"'{p['clip']}' (bars {other_start}-{other_end}) on track '{track}'"
+            )
+
+    clip_name = moving["clip"]
+    arrangement_mod.remove(project_dir, track, from_bar)
+    placement = arrangement_mod.place(project_dir, track, clip_name, bar=to_bar)
+    return {**placement, "moved": True, "from_bar": from_bar}
+
+
+# ---------------------------------------------------------------------------
+# clip content (consumed by the per-block editor phase)
+# ---------------------------------------------------------------------------
+
+def clip_midi_content(project_dir: Path, track: str, clip: str) -> dict[str, Any]:
+    """Return a MIDI clip's notes as ``(pitch, start_beat, length_beats, velocity)``.
+
+    Frames in the stored note list are converted to beats at the project tempo,
+    so the editor works in musical units. Also reports ``length_bars``,
+    ``beats_per_bar`` and ``bpm``.
+    """
+    project_dir = Path(project_dir)
+    data = clips_mod._get_for_track(project_dir, track, clip)
+    if data.get("clip", {}).get("type") != "midi":
+        raise BadInputError(f"clip '{clip}' is not a MIDI clip")
+
+    tp = project_mod.timing_params(project_dir)
+    bpm, sr, bpb = tp["bpm"], tp["sample_rate"], tp["beats_per_bar"]
+    fpb = (60.0 / bpm) * sr if bpm > 0 else 1.0  # frames per beat
+
+    notes_out = []
+    for n in data.get("notes", []):
+        start_frame = float(n.get("start_frame", 0) or 0)
+        dur_frame = float(n.get("duration_frame", 0) or 0)
+        notes_out.append({
+            "pitch": int(n.get("pitch", n.get("note", 60))),
+            "start_beat": round(start_frame / fpb, 6) if fpb else 0.0,
+            "length_beats": round(dur_frame / fpb, 6) if fpb else 0.0,
+            "velocity": int(n.get("velocity", 100)),
+        })
+
+    length_bars, _ = _clip_length_bars(project_dir, clip, tp)
+    return {
+        "notes": notes_out,
+        "length_bars": length_bars,
+        "beats_per_bar": bpb,
+        "bpm": bpm,
+    }
+
+
+def clip_audio_peaks(
+    project_dir: Path, track: str, clip: str, *, buckets: int = 800
+) -> dict[str, Any]:
+    """Return downsampled min/max peaks for an audio clip's source wav.
+
+    The source is read mono-summed and reduced to ``buckets`` (~600-1000)
+    ``[min, max]`` pairs suitable for drawing a waveform. Also reports
+    ``length_seconds`` and the clip ``params``.
+    """
+    project_dir = Path(project_dir)
+    data = clips_mod._get_for_track(project_dir, track, clip)
+    clip_meta = data.get("clip", {})
+    if clip_meta.get("type") != "audio":
+        raise BadInputError(f"clip '{clip}' is not an audio clip")
+
+    source = clip_meta.get("source")
+    if not source or not Path(source).is_file():
+        raise NotFoundError(f"audio source for clip '{clip}' not found: {source}")
+
+    import numpy as np
+    import soundfile as sf
+
+    audio, _sr = sf.read(source, dtype="float32", always_2d=True)
+    mono = audio.mean(axis=1)
+    n = len(mono)
+    buckets = max(1, min(int(buckets), 1000))
+    peaks: list[list[float]] = []
+    if n:
+        edges = np.linspace(0, n, buckets + 1, dtype=int)
+        for i in range(buckets):
+            a, b = edges[i], edges[i + 1]
+            if b <= a:
+                peaks.append([0.0, 0.0])
+                continue
+            seg = mono[a:b]
+            peaks.append([float(seg.min()), float(seg.max())])
+
+    return {
+        "peaks": peaks,
+        "length_seconds": data.get("length_seconds"),
+        "params": data.get("params", {}),
+    }
+
+
+def set_clip_audio_params(
+    project_dir: Path, track: str, clip: str, **params: Any
+) -> dict[str, Any]:
+    """Persist audio-clip param edits (gain/pitch/loop/...) via ``clips.set_params``."""
+    return clips_mod.set_params(Path(project_dir), track, clip, **params)
 
 
 def add_kit_to_track(
