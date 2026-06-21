@@ -4,16 +4,15 @@
 optional *recognizer* seam: given a batch of files (already probed for
 duration/kind), a backend listens to the audio and returns a coarse
 ``category`` plus a multi-valued ``instruments`` list. Recognizers are
-batch-first because model backends (CLAP, Gemini) amortize load/round-trips
+batch-first because model backends (CLAP, ACE-Step) amortize load
 over a folder.
 
-Four backends, selected by name via ``--recognize <backend>`` on
+Three backends, selected by name via ``--recognize <backend>`` on
 ``library add``/``library scan`` or the ``library.recognizer`` config default:
 
-  * ``heuristic``        — local, zero extra deps, spectral-feature rules.
-  * ``clap``              — local zero-shot audio-text embedding (opt-in extra).
-  * ``gemini-embedding``  — cloud embedding model (opt-in extra + API key).
-  * ``gemini-generative`` — cloud multimodal model, constrained JSON output.
+  * ``heuristic``  — local, zero extra deps, spectral-feature rules.
+  * ``clap``       — local zero-shot audio-text embedding (opt-in extra).
+  * ``ace-step``   — local ACE-Step audio embedding (opt-in extra).
 
 See ``recognize.types`` for the ``Recognizer``/``FileProbe``/``Recognition``
 shapes and ``recognize.registry`` for backend lookup.

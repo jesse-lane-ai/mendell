@@ -256,7 +256,7 @@ re-mix, re-arrange, swap loops, automate — not a one-off WAV.
 
 `mendell ace ...` wraps the [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5)
 open model family — text-to-music generation, editing, source separation, and
-audio understanding. Like the `clap`/`gemini` recognizers it is **opt-in and
+audio understanding. Like the `clap` recognizer it is **opt-in and
 heavyweight (GPU-oriented)**: ACE-Step isn't on PyPI, so install it from source
 and point Mendell at a downloaded checkpoint via environment variables. Any `ace`
 command without those raises an actionable error instead of a stack trace.
@@ -337,7 +337,7 @@ from prompt → clip → arrangement without leaving the CLI.
 **Content recognition (`--recognize ace-step`)** — ACE-Step's purpose-built
 captioner, [`ACE-Step/acestep-captioner`](https://huggingface.co/ACE-Step/acestep-captioner)
 (a Qwen2.5-Omni-7B multimodal model), is wired in as a `library` recognition
-backend alongside `clap`/`gemini`. It needs only `transformers` + `torch` (no
+backend alongside `clap`. It needs only `transformers` + `torch` (no
 generation checkpoint — far lighter than the DiT stack); the model downloads on
 first use and is overridable via `ACESTEP_CAPTIONER_MODEL`. Its free-text caption
 is keyword-mapped onto the standard `category`/`instruments` taxonomy, so it
@@ -445,14 +445,14 @@ nothing about the design assumes a single sample root.
 # anything — the library only ever stores paths + metadata, never sample audio itself.
 # Indexes every file once: guesses category (kick/snare/hat/loop/...) and BPM from
 # its filename, and caches both — see "Indexing & BPM detection" below.
-mendell library add <name> <path> [--tags drums,lofi,kicks] [--analyze] [--recognize heuristic|clap|gemini-embedding|gemini-generative] [--json]
+mendell library add <name> <path> [--tags drums,lofi,kicks] [--analyze] [--recognize heuristic|clap|ace-step] [--json]
 
 # List every registered folder (name, path, tags, file count, last-scanned time)
 mendell library list [--json]
 
 # Re-scan a folder (or all of them) — picks up files added/removed since registration
 # and rebuilds the cached category/BPM index
-mendell library scan [<name>] [--analyze] [--recognize heuristic|clap|gemini-embedding|gemini-generative] [--json]
+mendell library scan [<name>] [--analyze] [--recognize heuristic|clap|ace-step] [--json]
 
 # Inspect one registered folder — full file listing with detected category and
 # (where known) BPM per file, as ready-to-use refs
@@ -519,7 +519,7 @@ instruments; a loop can have several (a melodic loop → `["piano", "strings"]`;
 full/construction loop → `["drums", "bass", "keys"]`). `search --instrument <name>` matches
 any file whose list contains that token (whole-token match, like `--tag`).
 
-Four backends trade accuracy for weight, all behind the one `--recognize` flag:
+The backends trade accuracy for weight, all behind the one `--recognize` flag:
 
 - **`heuristic`** *(local, zero new deps)* — a spectral-feature classifier reusing the same
   signal analysis as warp detection. Fills the coarse `category` only; does not enumerate
@@ -527,23 +527,20 @@ Four backends trade accuracy for weight, all behind the one `--recognize` flag:
 - **`clap`** *(local, opt-in: `pip install 'mendell[clap]'`)* — CLAP audio↔text embeddings,
   zero-shot against the category/instrument vocabulary; coarse `category` **and** multi-label
   `instruments`.
-- **`gemini-embedding`** *(cloud, opt-in: `pip install 'mendell[gemini]'` + a `GEMINI_API_KEY`
-  / `GOOGLE_API_KEY` env var)* — the same embedding mechanic via Gemini Embedding.
-- **`gemini-generative`** *(cloud, same dep + key)* — prompts the Gemini multimodal model for
-  an instrument list directly; strongest on dense mixes (`category_confidence` is
-  presence/absence, ~1.0).
+- **`ace-step`** *(local, opt-in)* — ACE-Step's captioner model; see the ACE-Step section
+  above for its free-text caption keyword-mapped onto the standard taxonomy.
 
 Recognition results are **cached per file**, keyed by path + modification time, so a re-scan
 only re-runs a backend on files that were added or changed — unchanged files are never
-re-analyzed (and a cloud backend is never re-billed for them). A missing optional dependency
-or API key surfaces as an actionable error naming the exact `pip install` / env-var fix.
+re-analyzed. A missing optional dependency surfaces as an actionable error naming the exact
+`pip install` fix.
 
 ```bash
 mendell library search "808" --bpm 90 --kind loop --instrument 808 --json
 ```
 ```json
 { "ok": true, "data": { "matches": [
-  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "bass", "category_source": "gemini-generative", "category_confidence": 1.0, "instruments": ["808"], "kind": "loop", "kind_source": "filename", "bpm": 90.0, "bpm_source": "filename", "duration": 3.556, "tags": ["drums", "lofi"] }
+  { "ref": "my-drum-pack/Loops/dark-808-90bpm.wav", "category": "bass", "category_source": "clap", "category_confidence": 1.0, "instruments": ["808"], "kind": "loop", "kind_source": "filename", "bpm": 90.0, "bpm_source": "filename", "duration": 3.556, "tags": ["drums", "lofi"] }
 ] } }
 ```
 
