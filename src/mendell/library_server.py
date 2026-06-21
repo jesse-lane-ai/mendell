@@ -1199,6 +1199,12 @@ async function doImport() {
 // browser file picker can't help — this modal lists the server filesystem via
 // /api/fs/list and writes the chosen path back into the target input.
 let _browseTarget = null, _browseMode = "dir", _browseExts = "", _browseCwd = "";
+document.getElementById("browseList").addEventListener("click", (e) => {
+  const row = e.target.closest(".brow");
+  if (!row || !row.dataset.path) return;
+  if (row.dataset.kind === "file") browsePickFile(row.dataset.path);
+  else browseLoad(row.dataset.path);
+});
 function browseFor(inputId, mode, exts) {
   _browseTarget = inputId; _browseMode = mode || "dir"; _browseExts = exts || "";
   document.getElementById("browseTitle").textContent =
@@ -1219,14 +1225,14 @@ async function browseLoad(path) {
     document.getElementById("browseCwd").value = d.path;
     let h = "";
     for (const dir of d.dirs)
-      h += '<div class="brow" onclick="browseLoad(' + JSON.stringify(dir.path) +
-           ')">📁 ' + esc(dir.name) + '</div>';
+      h += '<div class="brow" data-kind="dir" data-path="' + esc(dir.path) +
+           '">📁 ' + esc(dir.name) + '</div>';
     if (_browseMode === "file")
       for (const f of d.files)
-        h += '<div class="brow" onclick="browsePickFile(' + JSON.stringify(f.path) +
-             ')">🎵 ' + esc(f.name) + '</div>';
-    document.getElementById("browseList").innerHTML =
-      h || '<div style="padding:10px;opacity:.6">empty</div>';
+        h += '<div class="brow" data-kind="file" data-path="' + esc(f.path) +
+             '">🎵 ' + esc(f.name) + '</div>';
+    const list = document.getElementById("browseList");
+    list.innerHTML = h || '<div style="padding:10px;opacity:.6">empty</div>';
   } catch(e) { alert(e.message); }
 }
 function browseUp() {
