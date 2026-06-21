@@ -486,6 +486,17 @@ class _Handler(BaseHTTPRequestHandler):
                     seed=payload.get("seed") or None,
                 )
                 self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/add-track":
+                data = arrange_view_mod.add_track(
+                    Path(payload["path"]).expanduser(),
+                    payload.get("name", ""), payload.get("type", ""),
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/remove-track":
+                data = arrange_view_mod.remove_track(
+                    Path(payload["path"]).expanduser(), payload["name"],
+                )
+                self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/arrange/new-project":
                 data = self._beat_new_project(payload)
                 self._send_json({"ok": True, "data": data})
@@ -804,6 +815,7 @@ _PAGE = r"""<!DOCTYPE html>
       <option value="">— pick a project —</option>
     </select>
     <button onclick="newProjDlg.showModal()">+ New project</button>
+    <button onclick="openAddTrackDlg()">+ Track</button>
     <button class="primary" onclick="randomFill('loop')">Random loop</button>
     <button class="primary" onclick="randomFill('kit')">Random kit</button>
     <button class="primary" onclick="randomFill('clip')">Random clip</button>
@@ -969,6 +981,19 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="row">
     <button onclick="newProjDlg.close()">Cancel</button>
     <button class="primary" onclick="createArrProject()">Create</button>
+  </div>
+</dialog>
+
+<dialog id="addTrackDlg">
+  <h3>Add track</h3>
+  <label>Name</label>
+  <input id="atName" placeholder="e.g. bass, vocals, fx">
+  <label>Type</label>
+  <select id="atType"><option value="midi">midi</option><option value="audio">audio</option></select>
+  <div id="atStatus" class="muted" style="font-size:12px;margin-top:6px"></div>
+  <div class="row">
+    <button onclick="addTrackDlg.close()">Cancel</button>
+    <button class="primary" onclick="doAddTrack()">Add</button>
   </div>
 </dialog>
 
@@ -2433,6 +2458,9 @@ function renderArrSelection() {
   if (s.type === "midi") {
     h += '<button onclick="arrAddKitSel()">🥁 Add kit</button>';
   }
+  if (s.bar == null) {
+    h += '<button onclick="arrRemoveTrackSel()">🗑 Remove track</button>';
+  }
   h += '</div>';
   // Replace-with-source row
   if (s.type === "audio") {
@@ -2578,6 +2606,40 @@ async function createArrProject() {
     document.getElementById("arrProject").value = data.path;
     await loadArrangeView();
   } catch (e) { alert("Failed to create project: " + e.message); }
+}
+
+// ---- Track management ---------------------------------------------------
+function openAddTrackDlg() {
+  if (!_arrProjectPath) { alert("Pick a project first."); return; }
+  document.getElementById("atName").value = "";
+  document.getElementById("atType").value = "midi";
+  document.getElementById("atStatus").textContent = "";
+  document.getElementById("addTrackDlg").showModal();
+}
+async function doAddTrack() {
+  const name = document.getElementById("atName").value.trim();
+  const type = document.getElementById("atType").value;
+  const st = document.getElementById("atStatus");
+  if (!name) { st.textContent = "Name is required."; return; }
+  try {
+    await api("/api/arrange/add-track", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, name, type }) });
+    document.getElementById("addTrackDlg").close();
+    await loadArrangeView();
+  } catch (e) { st.textContent = "Error: " + e.message; }
+}
+async function arrRemoveTrackSel() {
+  const s = _arrSel; if (!s) return;
+  if (!confirm('Remove track "' + s.track + '"? Its placements will be cleared (clips/samples on disk are untouched).')) return;
+  _arrSelStatus("Removing track…");
+  try {
+    await api("/api/arrange/remove-track", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, name: s.track }) });
+    _arrSel = null;
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
 }
 
 // ---- Kits tab -----------------------------------------------------------
