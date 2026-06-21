@@ -1155,6 +1155,59 @@ _PAGE = r"""<!DOCTYPE html>
   </div>
 </dialog>
 
+<dialog id="audioEditor" style="width:760px;max-width:94vw">
+  <h3 id="audioEdTitle">Audio clip</h3>
+  <div id="audioEdMeta" class="muted" style="font-size:12px;margin-bottom:8px"></div>
+  <div style="position:relative;background:#0e1014;border:1px solid #2a2e35;border-radius:6px">
+    <canvas id="audioEdCanvas" width="720" height="160"
+            style="display:block;width:100%;height:160px;cursor:ew-resize"></canvas>
+  </div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px">
+    <div>
+      <label>Gain (dB)</label>
+      <input id="audioEdGain" type="number" step="0.5" min="-60" max="24" style="width:90px">
+    </div>
+    <div>
+      <label>Pitch (semitones)</label>
+      <input id="audioEdPitch" type="number" step="1" min="-48" max="48" style="width:90px">
+    </div>
+    <div>
+      <label>Warp mode</label>
+      <select id="audioEdWarp" style="width:120px">
+        <option value="off">off</option>
+        <option value="beats">beats</option>
+        <option value="melodic">melodic</option>
+        <option value="harmonic">harmonic</option>
+        <option value="vocal">vocal</option>
+        <option value="complex">complex</option>
+      </select>
+    </div>
+    <div>
+      <label>Native BPM</label>
+      <input id="audioEdBpm" type="number" step="0.01" min="0" placeholder="(unset)" style="width:100px">
+    </div>
+  </div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
+      <input type="checkbox" id="audioEdLoop" style="width:auto" onchange="audioEdDraw()"> Loop
+    </label>
+    <div>
+      <label>Loop start (s)</label>
+      <input id="audioEdLoopStart" type="number" step="0.01" min="0" style="width:100px" oninput="audioEdDraw()">
+    </div>
+    <div>
+      <label>Loop end (s) <span class="muted">0 = clip end</span></label>
+      <input id="audioEdLoopEnd" type="number" step="0.01" min="0" style="width:100px" oninput="audioEdDraw()">
+    </div>
+    <span class="muted" style="font-size:12px">Drag the green (start) / red (end) markers on the waveform.</span>
+  </div>
+  <div class="row">
+    <span id="audioEdStatus" class="muted" style="margin-right:auto"></span>
+    <button onclick="audioEditor.close()">Cancel</button>
+    <button class="primary" onclick="audioEdSave()">Save</button>
+  </div>
+</dialog>
+
 <audio id="player"></audio>
 <script>
 let activeLib = "";
@@ -1776,8 +1829,202 @@ function openClipEditor(trackIndex, startBar) {
   selectClip(trackIndex, startBar);
   const t = _arrTrack(trackIndex); if (!t) return;
   const p = (t.placements || []).find(x => x.start_bar === startBar);
-  if (!p || (p.clip_type || t.type) !== "midi") return;  // guard: MIDI only
-  openMidiEditor(t.name, p.clip);
+  if (!p) return;
+  const ct = p.clip_type || t.type;
+  if (ct === "midi") { openMidiEditor(t.name, p.clip); return; }   // piano-roll editor
+  if (ct === "audio") { openAudioClipEditor(trackIndex, startBar); return; }  // waveform editor
+}
+
+// ---- Audio waveform editor ----------------------------------------------
+// Self-contained dialog for clip_type === "audio" blocks. Loads peaks +
+// current params from /api/clip/audio-peaks, lets the user tweak
+// gain/pitch/warp/native_bpm/loop and drag two loop markers over the
+// waveform, then POSTs only changed fields to /api/clip/audio-params.
+let _audioEd = null;   // {track, clip, peaks, length, params, dragging}
+
+async function openAudioClipEditor(trackIndex, startBar) {
+  const t = _arrTrack(trackIndex); if (!t) return;
+  const p = (t.placements || []).find(x => x.start_bar === startBar);
+  if (!p) return;
+  if ((p.clip_type || t.type) !== "audio") return;   // audio-only
+  if (!p.clip) return;
+
+  const dlg = document.getElementById("audioEditor");
+  document.getElementById("audioEdTitle").textContent = "Audio clip · " + p.clip;
+  document.getElementById("audioEdMeta").textContent = "loading…";
+  _audioEd = { track: t.name, clip: p.clip, peaks: [], length: 0, params: {}, dragging: null };
+  try { dlg.showModal(); } catch (e) {}
+
+  let d;
+  try {
+    const q = new URLSearchParams({ path: _arrProjectPath, track: t.name, clip: p.clip });
+    d = await api("/api/clip/audio-peaks?" + q.toString());
+  } catch (e) {
+    document.getElementById("audioEdMeta").textContent = "Error: " + e.message;
+    return;
+  }
+  const params = d.params || {};
+  _audioEd.peaks = d.peaks || [];
+  _audioEd.length = Number(d.length_seconds) || 0;
+  _audioEd.params = params;
+
+  const len = _audioEd.length;
+  document.getElementById("audioEdMeta").textContent =
+    "length " + (len ? len.toFixed(3) + "s" : "unknown") + " · " +
+    _audioEd.peaks.length + " peak columns";
+
+  // Bind controls to current params (fall back to module defaults).
+  document.getElementById("audioEdGain").value = (params.gain != null) ? params.gain : 0;
+  document.getElementById("audioEdPitch").value = (params.pitch != null) ? params.pitch : 0;
+  document.getElementById("audioEdWarp").value = params.warp || "off";
+  document.getElementById("audioEdBpm").value = (params.native_bpm != null) ? params.native_bpm : "";
+  document.getElementById("audioEdLoop").checked = !!params.loop;
+  document.getElementById("audioEdLoopStart").value =
+    (params.loop_start != null) ? params.loop_start : 0;
+  document.getElementById("audioEdLoopEnd").value =
+    (params.loop_end != null) ? params.loop_end : 0;   // 0 = clip end
+  document.getElementById("audioEdStatus").textContent = "";
+  audioEdDraw();
+}
+
+// Effective loop end in seconds (0/blank/out-of-range => clip end).
+function _audioEdLoopEndSec() {
+  const len = _audioEd ? _audioEd.length : 0;
+  let v = parseFloat(document.getElementById("audioEdLoopEnd").value);
+  if (!isFinite(v) || v <= 0 || (len && v > len)) return len;
+  return v;
+}
+function _audioEdLoopStartSec() {
+  const len = _audioEd ? _audioEd.length : 0;
+  let v = parseFloat(document.getElementById("audioEdLoopStart").value);
+  if (!isFinite(v) || v < 0) v = 0;
+  if (len && v > len) v = len;
+  return v;
+}
+
+function audioEdDraw() {
+  if (!_audioEd) return;
+  const cv = document.getElementById("audioEdCanvas");
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, mid = H / 2;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#0e1014"; ctx.fillRect(0, 0, W, H);
+  // zero line
+  ctx.strokeStyle = "#2a2e35"; ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(W, mid); ctx.stroke();
+  // waveform — one vertical line per peak column
+  const peaks = _audioEd.peaks, n = peaks.length;
+  if (n) {
+    ctx.strokeStyle = "#5b7cfa";
+    for (let i = 0; i < n; i++) {
+      const x = Math.floor(i / n * W) + 0.5;
+      const lo = peaks[i][0], hi = peaks[i][1];
+      const y1 = mid - hi * (mid - 2);
+      const y2 = mid - lo * (mid - 2);
+      ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, y2 === y1 ? y2 + 1 : y2); ctx.stroke();
+    }
+  }
+  const len = _audioEd.length;
+  if (document.getElementById("audioEdLoop").checked && len > 0) {
+    const s = _audioEdLoopStartSec(), e = _audioEdLoopEndSec();
+    const xs = s / len * W, xe = e / len * W;
+    ctx.fillStyle = "rgba(255,255,255,0.07)";
+    ctx.fillRect(xs, 0, Math.max(0, xe - xs), H);
+    // start marker (green)
+    ctx.strokeStyle = "#37d67a"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(xs, 0); ctx.lineTo(xs, H); ctx.stroke();
+    // end marker (red)
+    ctx.strokeStyle = "#e0563f";
+    ctx.beginPath(); ctx.moveTo(xe, 0); ctx.lineTo(xe, H); ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+}
+
+// Drag the loop markers directly on the canvas.
+(function audioEdWireCanvas() {
+  const cv = document.getElementById("audioEdCanvas");
+  if (!cv) return;
+  function secFromEvent(ev) {
+    const r = cv.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+    return frac * (_audioEd ? _audioEd.length : 0);
+  }
+  cv.addEventListener("mousedown", (ev) => {
+    if (!_audioEd || !_audioEd.length) return;
+    if (!document.getElementById("audioEdLoop").checked) {
+      document.getElementById("audioEdLoop").checked = true;
+    }
+    const sec = secFromEvent(ev);
+    const s = _audioEdLoopStartSec(), e = _audioEdLoopEndSec();
+    // grab whichever marker is closer
+    _audioEd.dragging = (Math.abs(sec - s) <= Math.abs(sec - e)) ? "start" : "end";
+    audioEdApplyDrag(sec); ev.preventDefault();
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (_audioEd && _audioEd.dragging) audioEdApplyDrag(secFromEvent(ev));
+  });
+  window.addEventListener("mouseup", () => { if (_audioEd) _audioEd.dragging = null; });
+})();
+
+function audioEdApplyDrag(sec) {
+  const len = _audioEd.length;
+  sec = Math.min(len, Math.max(0, sec));
+  if (_audioEd.dragging === "start") {
+    const e = _audioEdLoopEndSec();
+    if (sec > e) sec = e;
+    document.getElementById("audioEdLoopStart").value = sec.toFixed(3);
+  } else if (_audioEd.dragging === "end") {
+    const s = _audioEdLoopStartSec();
+    if (sec < s) sec = s;
+    document.getElementById("audioEdLoopEnd").value = sec.toFixed(3);
+  }
+  audioEdDraw();
+}
+
+async function audioEdSave() {
+  if (!_audioEd) return;
+  const prev = _audioEd.params || {};
+  const body = { path: _arrProjectPath, track: _audioEd.track, clip: _audioEd.clip };
+  const changed = {};
+  function maybeNum(id, key, prevVal) {
+    const raw = document.getElementById(id).value;
+    if (raw === "" || raw == null) return;
+    const v = parseFloat(raw);
+    if (!isFinite(v)) return;
+    if (prevVal == null || Math.abs(v - Number(prevVal)) > 1e-9) changed[key] = v;
+  }
+  maybeNum("audioEdGain", "gain", prev.gain);
+  maybeNum("audioEdPitch", "pitch", prev.pitch);
+  // native_bpm: only send if non-empty and changed (>0 required by backend)
+  const bpmRaw = document.getElementById("audioEdBpm").value;
+  if (bpmRaw !== "") {
+    const bpm = parseFloat(bpmRaw);
+    if (isFinite(bpm) && bpm > 0 && (prev.native_bpm == null || Math.abs(bpm - Number(prev.native_bpm)) > 1e-9))
+      changed.native_bpm = bpm;
+  }
+  const warp = document.getElementById("audioEdWarp").value;
+  if (warp !== (prev.warp || "off")) changed.warp = warp;
+  const loop = document.getElementById("audioEdLoop").checked;
+  if (loop !== !!prev.loop) changed.loop = loop;
+  const ls = _audioEdLoopStartSec();
+  if (prev.loop_start == null || Math.abs(ls - Number(prev.loop_start)) > 1e-9) changed.loop_start = ls;
+  const leRaw = parseFloat(document.getElementById("audioEdLoopEnd").value);
+  const le = (isFinite(leRaw) && leRaw > 0) ? leRaw : 0;   // 0 = clip end sentinel
+  if (prev.loop_end == null ? le !== 0 : Math.abs(le - Number(prev.loop_end)) > 1e-9) changed.loop_end = le;
+
+  if (!Object.keys(changed).length) {
+    document.getElementById("audioEditor").close();
+    return;
+  }
+  Object.assign(body, changed);
+  const status = document.getElementById("audioEdStatus");
+  status.textContent = "Saving…";
+  try {
+    await api("/api/clip/audio-params", { method: "POST", body: JSON.stringify(body) });
+    document.getElementById("audioEditor").close();
+    await loadArrangeView();
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+  }
 }
 
 // ===== MIDI piano-roll editor ============================================
