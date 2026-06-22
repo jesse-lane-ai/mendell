@@ -117,6 +117,36 @@ def _match_vocab(caption: str, vocab: tuple[str, ...]) -> list[str]:
     return [term for term in vocab if term in low]
 
 
+def _score_categories(caption: str, vocab: tuple[str, ...]) -> list[tuple[str, int, int]]:
+    """Rank the categories that appear in ``caption`` by how strongly the
+    caption supports them, returning ``(term, occurrences, first_pos)`` tuples
+    sorted strongest-first.
+
+    The old behaviour took the *first vocabulary entry* found (``matched[0]``),
+    which let a fixed priority order (``drum``/``perc`` precede ``bass`` for
+    loops) outrank a category the caption actually emphasizes — two near-identical
+    "FlatBass" files would split into ``bass``/``perc``/``drum`` on an incidental
+    word like "percussive". We instead score by:
+
+      1. occurrence count   — a caption that says "bass" twice means it,
+      2. earliest mention    — the lead noun usually names the sound,
+      3. vocabulary order    — stable tie-break only (its index in ``vocab``),
+
+    so the category the model leaned on wins regardless of where it sits in the
+    taxonomy list."""
+    low = caption.lower()
+    scored: list[tuple[str, int, int]] = []
+    for rank, term in enumerate(vocab):
+        first = low.find(term)
+        if first < 0:
+            continue
+        occurrences = low.count(term)
+        scored.append((term, occurrences, first, rank))  # type: ignore[arg-type]
+    # Strongest first: most occurrences, then earliest mention, then vocab order.
+    scored.sort(key=lambda s: (-s[1], s[2], s[3]))
+    return [(term, occ, first) for term, occ, first, _rank in scored]
+
+
 class AceStepRecognizer:
     """Caption-based recognition via the ACE-Step captioner."""
 
@@ -251,16 +281,20 @@ class AceStepRecognizer:
             return None
 
         cats = _categories(item.kind)
-        matched_cats = _match_vocab(caption, cats)
-        category = matched_cats[0] if matched_cats else cats[0]
+        scored_cats = _score_categories(caption, cats)
+        category = scored_cats[0][0] if scored_cats else cats[0]
         instruments = _match_vocab(caption, INSTRUMENT_VOCAB)[:INSTRUMENT_CAP]
-        confidence = CAPTION_CONFIDENCE if matched_cats else 0.3
+        confidence = CAPTION_CONFIDENCE if scored_cats else 0.3
         counts["captioned"] += 1
 
         self._progress(i, total, item.filename, f"-> {category}")
         analytics.emit({"event": "file", "i": i, "total": total, "file": item.filename,
                         "kind": item.kind, "category": category,
-                        "category_matched": bool(matched_cats), "instruments": instruments,
+                        "category_matched": bool(scored_cats),
+                        # All caption-supported categories, strongest-first, so a
+                        # mis-bucketing can be diagnosed from the analytics log.
+                        "category_candidates": [c[0] for c in scored_cats],
+                        "instruments": instruments,
                         "confidence": confidence, "vram_mib": _gpu_mem_mib(),
                         "caption": caption})
         return Recognition(

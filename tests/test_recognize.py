@@ -391,3 +391,34 @@ def test_ace_recognizer_isolates_bad_file_in_batch(monkeypatch):
     assert out[0].category == "kick"
     assert out[1] is None
     assert out[2].category == "snare"
+
+
+def test_score_categories_ranks_by_emphasis_not_vocab_order():
+    from mendell.recognize.ace_step import _score_categories
+    from mendell.recognize.types import LOOP_CATEGORIES
+
+    # The caption leans on "bass" (x3) but also mentions "drum" once. The old
+    # mapping took the first vocab entry found — and `drum` precedes `bass` in
+    # LOOP_CATEGORIES — so it would have mis-bucketed this as `drum`. Scoring by
+    # occurrence count picks `bass`.
+    caption = "a deep bass, warm sub bass, bass-forward groove over a light drum"
+    ranked = _score_categories(caption, LOOP_CATEGORIES)
+    assert ranked[0][0] == "bass"
+    assert [c[0] for c in ranked] == ["bass", "drum"]
+
+
+def test_score_categories_tie_breaks_on_earliest_mention():
+    from mendell.recognize.ace_step import _score_categories
+    from mendell.recognize.types import LOOP_CATEGORIES
+
+    # Equal counts (1 each) -> the category mentioned first wins, regardless of
+    # its position in the vocabulary (melodic sits after drum in LOOP_CATEGORIES).
+    ranked = _score_categories("a melodic line over a drum beat", LOOP_CATEGORIES)
+    assert ranked[0][0] == "melodic"
+
+
+def test_score_categories_empty_when_no_match():
+    from mendell.recognize.ace_step import _score_categories
+    from mendell.recognize.types import LOOP_CATEGORIES
+
+    assert _score_categories("an indescribable noise", LOOP_CATEGORIES) == []
