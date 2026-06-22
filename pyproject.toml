@@ -27,11 +27,6 @@ clap = [
     "torchvision>=0.15",
     "laion-clap>=1.1",
 ]
-# `library add/scan --recognize gemini-embedding|gemini-generative` — cloud
-# recognition via the Gemini API. Needs GEMINI_API_KEY/GOOGLE_API_KEY at runtime.
-gemini = [
-    "google-genai>=0.3",
-]
 # `ace ...` and `library ... --recognize ace-step` — ACE-Step 1.5, an open
 # generative audio model family (generation, cover, repaint, separation,
 # vocal2bgm, audio understanding). Heavyweight + GPU-oriented (CUDA/MPS/ROCm/

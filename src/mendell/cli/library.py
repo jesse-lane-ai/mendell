@@ -52,8 +52,8 @@ def add(name, path, tags, analyze, recognize):
 
     --recognize <backend> additionally listens to each file's audio (like
     --analyze) and fills in `instruments` plus a content-based `category` on
-    files the filename guess couldn't classify (heuristic/clap/gemini-embedding/
-    gemini-generative — see `mendell config set library.recognizer` for a default).
+    files the filename guess couldn't classify (heuristic/clap/ace-step — see
+    `mendell config set library.recognizer` for a default).
     """
     data = library_mod.add(name, path, tags=_split_tags(tags), analyze=analyze, recognize=_resolve_recognizer(recognize))
     return data, data

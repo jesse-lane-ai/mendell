@@ -32,7 +32,6 @@ from . import library as library_mod
 from . import midi_catalog as midi_catalog_mod
 from . import midi_gen as midi_gen_mod
 from . import registry as registry_mod
-from .clips.name_classify import classify_from_names
 from .errors import MendellError
 from .recognize import list_backends
 
@@ -246,14 +245,6 @@ class _Handler(BaseHTTPRequestHandler):
                     raise MendellError("name is required", code=1)
                 clip = midi_catalog_mod.show(name)
                 self._send_json({"ok": True, "data": midi_catalog_mod.summary(clip["path"])})
-            elif path == "/api/classify/probe":
-                file_path_param = query.get("path", [None])[0]
-                if not file_path_param:
-                    raise MendellError("path is required", code=1)
-                self._send_json({"ok": True, "data": {
-                    "path": file_path_param,
-                    "name_classify": classify_from_names(file_path_param),
-                }})
             else:
                 self._send(404, b"not found", "text/plain")
         except Exception as err:  # noqa: BLE001
@@ -484,6 +475,17 @@ class _Handler(BaseHTTPRequestHandler):
                     kit=payload.get("kit") or None,
                     library=payload.get("library") or None,
                     seed=payload.get("seed") or None,
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/add-track":
+                data = arrange_view_mod.add_track(
+                    Path(payload["path"]).expanduser(),
+                    payload.get("name", ""), payload.get("type", ""),
+                )
+                self._send_json({"ok": True, "data": data})
+            elif parsed.path == "/api/arrange/remove-track":
+                data = arrange_view_mod.remove_track(
+                    Path(payload["path"]).expanduser(), payload["name"],
                 )
                 self._send_json({"ok": True, "data": data})
             elif parsed.path == "/api/arrange/new-project":
@@ -787,7 +789,6 @@ _PAGE = r"""<!DOCTYPE html>
     <button id="tab-arrange" class="tab" onclick="showTab('arrange')">Arrangement</button>
     <button id="tab-kits" class="tab" onclick="showTab('kits')">Kits</button>
     <button id="tab-midi" class="tab" onclick="showTab('midi')">MIDI</button>
-    <button id="tab-classify" class="tab" onclick="showTab('classify')">Classify</button>
   </nav>
   <span id="libActions">
     <button onclick="rescan()">Re-scan all</button>
@@ -804,6 +805,7 @@ _PAGE = r"""<!DOCTYPE html>
       <option value="">— pick a project —</option>
     </select>
     <button onclick="newProjDlg.showModal()">+ New project</button>
+    <button onclick="openAddTrackDlg()">+ Track</button>
     <button class="primary" onclick="randomFill('loop')">Random loop</button>
     <button class="primary" onclick="randomFill('kit')">Random kit</button>
     <button class="primary" onclick="randomFill('clip')">Random clip</button>
@@ -814,7 +816,6 @@ _PAGE = r"""<!DOCTYPE html>
   <span id="midiActions" style="display:none">
     <button onclick="midiLoadClips()">Refresh</button>
   </span>
-  <span id="classifyActions" style="display:none"></span>
 </header>
 <main id="libraryView">
   <aside>
@@ -946,18 +947,6 @@ _PAGE = r"""<!DOCTYPE html>
   </div>
 </section>
 
-<section id="classifyView" style="display:none; padding:16px 20px; width:100%">
-  <div class="card" style="max-width:560px">
-    <h3>Classify a sample path</h3>
-    <p class="muted" style="font-size:12px;margin:0 0 10px">Derives kind / category / key / bpm from the filename and parent-folder names.</p>
-    <div style="display:flex;gap:8px">
-      <input id="cpInput" placeholder="/path/to/sample.wav" style="flex:1" onkeydown="if(event.key==='Enter')classifyProbe()">
-      <button class="primary" onclick="classifyProbe()">Probe</button>
-    </div>
-    <pre id="cpResult" style="background:#181a1f;border-radius:4px;padding:.8rem;margin:12px 0 0;min-height:3rem;white-space:pre-wrap"></pre>
-  </div>
-</section>
-
 <dialog id="newProjDlg">
   <h3>New project</h3>
   <label>Name</label><span style="display:flex;gap:4px"><input id="npName" placeholder="blank = random" style="flex:1"><button type="button" title="random name" onclick="slugInto('npName')">🎲</button></span>
@@ -969,6 +958,19 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="row">
     <button onclick="newProjDlg.close()">Cancel</button>
     <button class="primary" onclick="createArrProject()">Create</button>
+  </div>
+</dialog>
+
+<dialog id="addTrackDlg">
+  <h3>Add track</h3>
+  <label>Name</label>
+  <input id="atName" placeholder="e.g. bass, vocals, fx">
+  <label>Type</label>
+  <select id="atType"><option value="midi">midi</option><option value="audio">audio</option></select>
+  <div id="atStatus" class="muted" style="font-size:12px;margin-top:6px"></div>
+  <div class="row">
+    <button onclick="addTrackDlg.close()">Cancel</button>
+    <button class="primary" onclick="doAddTrack()">Add</button>
   </div>
 </dialog>
 
@@ -1653,7 +1655,6 @@ const TABS = {
               onShow: () => loadKits() },
   midi:     { view: "midiView",     actions: "midiActions",     disp: "block",
               onShow: () => midiTabInit() },
-  classify: { view: "classifyView", actions: "classifyActions", disp: "block" },
 };
 function showTab(name) {
   for (const [key, t] of Object.entries(TABS)) {
@@ -2271,7 +2272,7 @@ function renderArrangeGrid(snap) {
     const trkSel = (_arrSel && _arrSel.track === track.name && _arrSel.bar == null) ? ";box-shadow:0 0 0 2px #fff inset" : "";
     html += '<div style="display:flex;align-items:stretch;margin-top:4px">';
     // Track label
-    html += '<div onclick="selectTrack(' + ti + ')" title="select track" ' +
+    html += '<div class="arr-tracklabel" data-ti="' + ti + '" onclick="selectTrack(' + ti + ')" title="select track" ' +
       'style="cursor:pointer;width:' + ARR_LABELW + 'px;flex:0 0 ' + ARR_LABELW + 'px;height:' + ARR_ROWH +
       'px;padding:0 6px;background:#1d2026;border-radius:5px;display:flex;align-items:center;gap:5px;overflow:hidden' + trkSel + '">' +
       '<span style="background:#3b5bdb;color:#fff;border-radius:3px;padding:0 4px;font-weight:600">' + badge + '</span>' +
@@ -2290,7 +2291,7 @@ function renderArrangeGrid(snap) {
       const left = (p.start_bar - 1) * ARR_PXBAR;
       const width = Math.max(p.length_bars * ARR_PXBAR - 2, 18);
       const sel = (_arrSel && _arrSel.track === track.name && _arrSel.bar === p.start_bar) ? ";box-shadow:0 0 0 2px #fff inset" : "";
-      html += '<div class="arr-block" ' +
+      html += '<div class="arr-block" data-ti="' + ti + '" data-bar="' + p.start_bar + '" ' +
         (draggable ? 'draggable="true" ondragstart="arrDragStart(event,' + ti + ',' + p.start_bar + ')" ' : '') +
         'onclick="event.stopPropagation();selectClip(' + ti + ',' + p.start_bar + ')" ' +
         'ondblclick="event.stopPropagation();openClipEditor(' + ti + ',' + p.start_bar + ')" ' +
@@ -2385,13 +2386,32 @@ function _arrTrack(ti) { return (_arrSnap && _arrSnap.tracks) ? _arrSnap.tracks[
 function selectTrack(ti) {
   const t = _arrTrack(ti); if (!t) return;
   _arrSel = { track: t.name, type: t.type, bar: null, clip: null };
-  renderArrangeGrid(_arrSnap); renderArrSelection();
+  applyArrSelection(); renderArrSelection();
 }
 function selectClip(ti, bar) {
   const t = _arrTrack(ti); if (!t) return;
   const p = (t.placements || []).find(x => x.start_bar === bar);
   _arrSel = { track: t.name, type: t.type, bar, clip: p ? p.clip : null };
-  renderArrangeGrid(_arrSnap); renderArrSelection();
+  applyArrSelection(); renderArrSelection();
+}
+// Update selection highlight on the EXISTING grid nodes — never rebuild the
+// grid here. Rebuilding (renderArrangeGrid) on a single click destroys the
+// clicked block before the browser can pair it into a dblclick, which would
+// stop openClipEditor from ever firing.
+function applyArrSelection() {
+  document.querySelectorAll("#arrGrid .arr-block, #arrGrid .arr-tracklabel")
+    .forEach(el => { el.style.boxShadow = ""; });
+  if (!_arrSel || !_arrSnap) return;
+  const ti = (_arrSnap.tracks || []).findIndex(t => t.name === _arrSel.track);
+  if (ti < 0) return;
+  const sel = "0 0 0 2px #fff inset";
+  if (_arrSel.bar == null) {
+    const lbl = document.querySelector('#arrGrid .arr-tracklabel[data-ti="' + ti + '"]');
+    if (lbl) lbl.style.boxShadow = sel;
+  } else {
+    const blk = document.querySelector('#arrGrid .arr-block[data-ti="' + ti + '"][data-bar="' + _arrSel.bar + '"]');
+    if (blk) blk.style.boxShadow = sel;
+  }
 }
 
 function renderArrSelection() {
@@ -2413,6 +2433,9 @@ function renderArrSelection() {
   }
   if (s.type === "midi") {
     h += '<button onclick="arrAddKitSel()">🥁 Add kit</button>';
+  }
+  if (s.bar == null) {
+    h += '<button onclick="arrRemoveTrackSel()">🗑 Remove track</button>';
   }
   h += '</div>';
   // Replace-with-source row
@@ -2559,6 +2582,40 @@ async function createArrProject() {
     document.getElementById("arrProject").value = data.path;
     await loadArrangeView();
   } catch (e) { alert("Failed to create project: " + e.message); }
+}
+
+// ---- Track management ---------------------------------------------------
+function openAddTrackDlg() {
+  if (!_arrProjectPath) { alert("Pick a project first."); return; }
+  document.getElementById("atName").value = "";
+  document.getElementById("atType").value = "midi";
+  document.getElementById("atStatus").textContent = "";
+  document.getElementById("addTrackDlg").showModal();
+}
+async function doAddTrack() {
+  const name = document.getElementById("atName").value.trim();
+  const type = document.getElementById("atType").value;
+  const st = document.getElementById("atStatus");
+  if (!name) { st.textContent = "Name is required."; return; }
+  try {
+    await api("/api/arrange/add-track", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, name, type }) });
+    document.getElementById("addTrackDlg").close();
+    await loadArrangeView();
+  } catch (e) { st.textContent = "Error: " + e.message; }
+}
+async function arrRemoveTrackSel() {
+  const s = _arrSel; if (!s) return;
+  if (!confirm('Remove track "' + s.track + '"? Its placements will be cleared (clips/samples on disk are untouched).')) return;
+  _arrSelStatus("Removing track…");
+  try {
+    await api("/api/arrange/remove-track", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: _arrProjectPath, name: s.track }) });
+    _arrSel = null;
+    await loadArrangeView();
+  } catch (e) { _arrSelStatus(e.message, true); }
 }
 
 // ---- Kits tab -----------------------------------------------------------
@@ -2939,27 +2996,6 @@ async function midiGenerate() {
 function midiTabInit() {
   if (!document.getElementById("mg-71-0")) midiInitGrid();
   midiLoadClips();
-}
-
-// ---- Classify tab -------------------------------------------------------
-async function classifyProbe() {
-  const p = document.getElementById("cpInput").value.trim();
-  const out = document.getElementById("cpResult");
-  if (!p) { out.textContent = "← enter a file path"; return; }
-  out.textContent = "probing…";
-  try {
-    const data = await api("/api/classify/probe?path=" + encodeURIComponent(p));
-    const nc = data.name_classify;
-    out.textContent = [
-      "kind:        " + (nc.kind || "—"),
-      "category:    " + (nc.category || "—"),
-      "key:         " + (nc.key || "—") + "   scale: " + (nc.scale || "—"),
-      "bpm:         " + (nc.bpm || "—"),
-      "instruments: " + ((nc.instruments || []).join(", ") || "—"),
-      "confidence:  " + (nc.confidence != null ? Number(nc.confidence).toFixed(3) : "—"),
-      "source:      " + (nc.source || "—"),
-    ].join("\n");
-  } catch (e) { out.textContent = "Error: " + e.message; }
 }
 </script>
 </body>

@@ -658,3 +658,32 @@ def add_kit_to_track(
         mapped = len(out[0])
 
     return {"track": track, "sampler_track": track, "kit": kit, "mapped": mapped}
+
+
+# ---------------------------------------------------------------------------
+# track management (add / remove) — for the arrangement-view UI buttons
+# ---------------------------------------------------------------------------
+
+def add_track(project_dir: Path, name: str, track_type: str) -> dict[str, Any]:
+    """Create a midi or audio track (idempotent). Returns the track summary."""
+    project_dir = Path(project_dir)
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("track name is required")
+    if track_type not in ("midi", "audio"):
+        raise ValueError(f"track type must be 'midi' or 'audio', got {track_type!r}")
+    return tracks_mod.add(project_dir, name, track_type)
+
+
+def remove_track(project_dir: Path, name: str) -> dict[str, Any]:
+    """Delete a track and strip any of its placements from the arrangement."""
+    project_dir = Path(project_dir)
+    result = tracks_mod.remove(project_dir, name)
+    data = arrangement_mod.load(project_dir)
+    placements = data.get("clips", [])
+    remaining = [p for p in placements if p.get("track") != name]
+    if len(remaining) != len(placements):
+        data["clips"] = remaining
+        arrangement_mod.save(project_dir, data)
+    result["placements_removed"] = len(placements) - len(remaining)
+    return result
